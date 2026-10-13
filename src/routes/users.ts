@@ -1,22 +1,22 @@
 
 import { Router } from "express";
 import pool from "../config/database.js";
+import { authenticateApiKey } from "../middleware/auth.js";
 
 const router = Router();
 
-router.post("/", async (req, res) => {
-  const { account_id, external_id, plan_id } = req.body ?? {};
+router.post("/", authenticateApiKey, async (req, res) => {
+  const { external_id, plan_id } = req.body ?? {};
+  const account_id = res.locals.account.id;
 
   if (
-    !Number.isSafeInteger(account_id) ||
-    account_id <= 0 ||
     typeof external_id !== "string" ||
     external_id.trim() === "" ||
     !Number.isSafeInteger(plan_id) ||
     plan_id <= 0
   ) {
     return res.status(400).json({
-      message: "Valid account_id, external_id and plan_id are required"
+      message: "Valid external_id and plan_id are required"
     });
   }
 
