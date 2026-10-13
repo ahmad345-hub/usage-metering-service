@@ -3,13 +3,14 @@ import express from "express";
 import pool from "./config/database.js";
 
 import plansRouter from "./routes/plans.js";
-
+import accountsRouter from "./routes/accounts.js";
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
 app.use(express.json());
 app.use("/api/plans", plansRouter);
+app.use("/api/accounts", accountsRouter);
 
 app.get("/", (req, res) => {
   res.json({
