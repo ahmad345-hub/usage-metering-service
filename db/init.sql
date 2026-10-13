@@ -163,3 +163,19 @@ ON usage_requests (account_id, created_at DESC);
 
 CREATE INDEX idx_usage_records_month
 ON usage_records (account_id, month);
+
+
+
+INSERT INTO plans (
+    name,
+    plan_type,
+    account_id,
+    monthly_limit,
+    max_per_request
+)
+VALUES
+    ('Starter', 'account', NULL, 2400, 35),
+    ('Pro', 'account', NULL, 18000, 250),
+    ('Basic', 'user', NULL, 180, 12),
+    ('Premium', 'user', NULL, 1800, 85)
+ON CONFLICT DO NOTHING;
