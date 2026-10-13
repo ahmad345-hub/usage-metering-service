@@ -262,4 +262,42 @@ if (existingRequest.rows.length > 0) {
   }
 });
 
+
+
+router.get("/history", authenticateApiKey, async (req, res) => {
+  const accountId = res.locals.account.id;
+
+  try {
+    const result = await pool.query(
+      `SELECT
+         r.id,
+         r.request_id,
+         u.external_id,
+         r.units,
+         r.accepted,
+         r.rejection_level,
+         r.rejection_rule,
+         r.created_at
+       FROM usage_requests r
+       JOIN users u ON r.user_id = u.id
+       WHERE r.account_id = $1
+       ORDER BY r.created_at DESC, r.id DESC`,
+      [accountId]
+    );
+
+    return res.json({
+      account_id: accountId,
+      total: result.rows.length,
+      requests: result.rows
+    });
+  } catch (error) {
+    console.error("Failed to load usage history:", error);
+
+    return res.status(500).json({
+      message: "Failed to load usage history"
+    });
+  }
+});
+
+
 export default router;
