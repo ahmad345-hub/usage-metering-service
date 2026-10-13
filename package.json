@@ -1,0 +1,28 @@
+{
+  "name": "quota-service",
+  "version": "1.0.0",
+  "description": "",
+  "main": "dist/index.js","type": "module",
+ "scripts": {
+  "dev": "tsx watch src/index.ts",
+  "build": "tsc",
+  "start": "node dist/index.js"
+},
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ahmad345-hub/usage-metering-service.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/ahmad345-hub/usage-metering-service/issues"
+  },
+  "homepage": "https://github.com/ahmad345-hub/usage-metering-service#readme",
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}
