@@ -331,4 +331,118 @@ router.get("/history", authenticateApiKey, async (req, res) => {
   }
 });
 
+
+
+
+router.get("/summary", authenticateApiKey, async (req, res) => {
+  const accountId = res.locals.account.id;
+
+  try {
+    const result = await pool.query(
+      `SELECT
+         a.id AS account_id,
+         p.name AS plan_name,
+         p.monthly_limit,
+         COALESCE(r.used_units, 0) AS used_units
+       FROM accounts a
+       JOIN plans p ON a.plan_id = p.id
+       LEFT JOIN usage_records r
+         ON r.account_id = a.id
+         AND r.user_id IS NULL
+         AND r.month = DATE_TRUNC('month', NOW())::date
+       WHERE a.id = $1`,
+      [accountId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        message: "Account not found"
+      });
+    }
+
+    const account = result.rows[0];
+
+    const monthlyLimit = BigInt(account.monthly_limit);
+    const usedUnits = BigInt(account.used_units);
+
+    const remainingUnits =
+      monthlyLimit > usedUnits
+        ? monthlyLimit - usedUnits
+        : 0n;
+
+    return res.json({
+      account_id: account.account_id,
+      plan_name: account.plan_name,
+      monthly_limit: monthlyLimit.toString(),
+      used_units: usedUnits.toString(),
+      remaining_units: remainingUnits.toString()
+    });
+  } catch (error) {
+    console.error("Failed to load usage summary:", error);
+
+    return res.status(500).json({
+      message: "Failed to load usage summary"
+    });
+  }
+});
+
+
+
+
+router.get("/users/:externalId/summary", authenticateApiKey, async (req, res) => {
+  const accountId = res.locals.account.id;
+  const externalId = req.params.externalId;
+
+  try {
+    const result = await pool.query(
+      `SELECT
+         u.id AS user_id,
+         u.external_id,
+         p.name AS plan_name,
+         p.monthly_limit,
+         COALESCE(r.used_units, 0) AS used_units
+       FROM users u
+       JOIN plans p ON u.plan_id = p.id
+       LEFT JOIN usage_records r
+         ON r.user_id = u.id
+         AND r.account_id = u.account_id
+         AND r.month = DATE_TRUNC('month', NOW())::date
+       WHERE u.account_id = $1
+         AND u.external_id = $2`,
+      [accountId, externalId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        message: "User not found"
+      });
+    }
+
+    const user = result.rows[0];
+    const monthlyLimit = BigInt(user.monthly_limit);
+    const usedUnits = BigInt(user.used_units);
+
+    const remainingUnits =
+      monthlyLimit > usedUnits
+        ? monthlyLimit - usedUnits
+        : 0n;
+
+    return res.json({
+      user_id: user.user_id,
+      external_id: user.external_id,
+      plan_name: user.plan_name,
+      monthly_limit: monthlyLimit.toString(),
+      used_units: usedUnits.toString(),
+      remaining_units: remainingUnits.toString()
+    });
+  } catch (error) {
+    console.error("Failed to load user usage summary:", error);
+
+    return res.status(500).json({
+      message: "Failed to load user usage summary"
+    });
+  }
+});
+
+
 export default router;
