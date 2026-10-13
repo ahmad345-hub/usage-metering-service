@@ -5,6 +5,7 @@ import pool from "../config/database.js";
 
 const router = Router();
 
+// Record usage and enforce quotas
 router.post("/", authenticateApiKey, async (req, res) => {
   const { external_id, request_id, units } = req.body ?? {};
   const accountId = res.locals.account.id;
@@ -43,51 +44,49 @@ router.post("/", authenticateApiKey, async (req, res) => {
       [accountId]
     );
 
-    
-const existingRequest = await client.query(
-  `SELECT
-     r.id,
-     r.user_id,
-     u.external_id,
-     r.units,
-     r.accepted,
-     r.rejection_level,
-     r.rejection_rule
-   FROM usage_requests r
-   JOIN users u ON r.user_id = u.id
-   WHERE r.account_id = $1
-     AND r.request_id = $2`,
-  [accountId, request_id.trim()]
-);
+    const existingRequest = await client.query(
+      `SELECT
+         r.id,
+         r.user_id,
+         u.external_id,
+         r.units,
+         r.accepted,
+         r.rejection_level,
+         r.rejection_rule
+       FROM usage_requests r
+       JOIN users u ON r.user_id = u.id
+       WHERE r.account_id = $1
+         AND r.request_id = $2`,
+      [accountId, request_id.trim()]
+    );
 
-if (existingRequest.rows.length > 0) {
-  const previous = existingRequest.rows[0];
+    if (existingRequest.rows.length > 0) {
+      const previous = existingRequest.rows[0];
 
-  await client.query("ROLLBACK");
+      await client.query("ROLLBACK");
 
-  if (
-    previous.external_id !== external_id.trim() ||
-    previous.units !== units
-  ) {
-    return res.status(409).json({
-      message: "Request ID already used with different data",
-      request_id: request_id.trim()
-    });
-  }
+      if (
+        previous.external_id !== external_id.trim() ||
+        previous.units !== units
+      ) {
+        return res.status(409).json({
+          message: "Request ID already used with different data",
+          request_id: request_id.trim()
+        });
+      }
 
-  return res.status(previous.accepted ? 200 : 429).json({
-    message: previous.accepted
-      ? "Usage already recorded"
-      : "Request was previously rejected",
-    request_id: request_id.trim(),
-    accepted: previous.accepted,
-    requested_units: previous.units,
-    rejection_level: previous.rejection_level,
-    rejection_rule: previous.rejection_rule,
-    replayed: true
-  });
-}
-
+      return res.status(previous.accepted ? 200 : 429).json({
+        message: previous.accepted
+          ? "Usage already recorded"
+          : "Request was previously rejected",
+        request_id: request_id.trim(),
+        accepted: previous.accepted,
+        requested_units: previous.units,
+        rejection_level: previous.rejection_level,
+        rejection_rule: previous.rejection_rule,
+        replayed: true
+      });
+    }
 
     const userResult = await client.query(
       `SELECT
@@ -98,7 +97,8 @@ if (existingRequest.rows.length > 0) {
          p.max_per_request
        FROM users u
        JOIN plans p ON u.plan_id = p.id
-       WHERE u.account_id = $1 AND u.external_id = $2`,
+       WHERE u.account_id = $1
+         AND u.external_id = $2`,
       [accountId, external_id.trim()]
     );
 
@@ -262,12 +262,39 @@ if (existingRequest.rows.length > 0) {
   }
 });
 
-
-
+// Get paginated usage history
 router.get("/history", authenticateApiKey, async (req, res) => {
   const accountId = res.locals.account.id;
 
+  const page = Number(req.query.page ?? 1);
+  const limit = Number(req.query.limit ?? 10);
+
+  if (
+    !Number.isSafeInteger(page) ||
+    page < 1 ||
+    !Number.isSafeInteger(limit) ||
+    limit < 1 ||
+    limit > 100 ||
+    !Number.isSafeInteger((page - 1) * limit)
+  ) {
+    return res.status(400).json({
+      message: "Page must be positive and limit must be between 1 and 100"
+    });
+  }
+
+  const offset = (page - 1) * limit;
+
   try {
+    const countResult = await pool.query(
+      `SELECT COUNT(*) AS total
+       FROM usage_requests
+       WHERE account_id = $1`,
+      [accountId]
+    );
+
+    const total = Number(countResult.rows[0].total);
+    const totalPages = Math.ceil(total / limit);
+
     const result = await pool.query(
       `SELECT
          r.id,
@@ -281,13 +308,18 @@ router.get("/history", authenticateApiKey, async (req, res) => {
        FROM usage_requests r
        JOIN users u ON r.user_id = u.id
        WHERE r.account_id = $1
-       ORDER BY r.created_at DESC, r.id DESC`,
-      [accountId]
+       ORDER BY r.created_at DESC, r.id DESC
+       LIMIT $2 OFFSET $3`,
+      [accountId, limit, offset]
     );
 
     return res.json({
       account_id: accountId,
-      total: result.rows.length,
+      page,
+      limit,
+      total,
+      total_pages: totalPages,
+      count: result.rows.length,
       requests: result.rows
     });
   } catch (error) {
@@ -298,6 +330,5 @@ router.get("/history", authenticateApiKey, async (req, res) => {
     });
   }
 });
-
 
 export default router;
