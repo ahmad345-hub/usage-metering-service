@@ -1,11 +1,16 @@
+
 import { Router } from "express";
 import { authenticateApiKey } from "../middleware/auth.js";
 import pool from "../config/database.js";
+import { checkQuota } from "../services/quotaService.js";
+
 const router = Router();
+
 // Record usage and enforce quotas
 router.post("/", authenticateApiKey, async (req, res) => {
   const { external_id, request_id, units } = req.body ?? {};
   const accountId = res.locals.account.id;
+
   if (
     typeof external_id !== "string" ||
     external_id.trim() === "" ||
@@ -20,21 +25,26 @@ router.post("/", authenticateApiKey, async (req, res) => {
       message: "Valid external_id, request_id and units are required"
     });
   }
+
   const client = await pool.connect().catch((error) => {
     console.error("Database connection failed:", error);
     return null;
   });
+
   if (!client) {
     return res.status(503).json({
       message: "Database unavailable"
     });
   }
+
   try {
     await client.query("BEGIN");
+
     await client.query(
       "SELECT pg_advisory_xact_lock($1)",
       [accountId]
     );
+
     const existingRequest = await client.query(
       `SELECT
          r.id,
@@ -50,9 +60,12 @@ router.post("/", authenticateApiKey, async (req, res) => {
          AND r.request_id = $2`,
       [accountId, request_id.trim()]
     );
+
     if (existingRequest.rows.length > 0) {
       const previous = existingRequest.rows[0];
+
       await client.query("ROLLBACK");
+
       if (
         previous.external_id !== external_id.trim() ||
         previous.units !== units
@@ -62,6 +75,7 @@ router.post("/", authenticateApiKey, async (req, res) => {
           request_id: request_id.trim()
         });
       }
+
       return res.status(previous.accepted ? 200 : 429).json({
         message: previous.accepted
           ? "Usage already recorded"
@@ -74,6 +88,7 @@ router.post("/", authenticateApiKey, async (req, res) => {
         replayed: true
       });
     }
+
     const userResult = await client.query(
       `SELECT
          u.id,
@@ -87,12 +102,15 @@ router.post("/", authenticateApiKey, async (req, res) => {
          AND u.external_id = $2`,
       [accountId, external_id.trim()]
     );
+
     if (userResult.rows.length === 0) {
       await client.query("ROLLBACK");
+
       return res.status(404).json({
         message: "User not found"
       });
     }
+
     const accountResult = await client.query(
       `SELECT
          a.id,
@@ -105,14 +123,18 @@ router.post("/", authenticateApiKey, async (req, res) => {
        WHERE a.id = $1`,
       [accountId]
     );
+
     if (accountResult.rows.length === 0) {
       await client.query("ROLLBACK");
+
       return res.status(404).json({
         message: "Account not found"
       });
     }
+
     const accountPlan = accountResult.rows[0];
     const userPlan = userResult.rows[0];
+
     const usageResult = await client.query(
       `SELECT
          COALESCE(
@@ -133,28 +155,25 @@ router.post("/", authenticateApiKey, async (req, res) => {
          ) AS user_used`,
       [accountId, userPlan.id]
     );
+
     const accountUsed = BigInt(usageResult.rows[0].account_used);
     const userUsed = BigInt(usageResult.rows[0].user_used);
     const requestedUnits = BigInt(units);
-    let rejectionLevel: "account" | "user" | null = null;
-    let rejectionRule: "monthly_limit" | "max_per_request" | null = null;
-    if (units > accountPlan.max_per_request) {
-      rejectionLevel = "account";
-      rejectionRule = "max_per_request";
-    } else if (units > userPlan.max_per_request) {
-      rejectionLevel = "user";
-      rejectionRule = "max_per_request";
-    } else if (
-      accountUsed + requestedUnits > BigInt(accountPlan.monthly_limit)
-    ) {
-      rejectionLevel = "account";
-      rejectionRule = "monthly_limit";
-    } else if (
-      userUsed + requestedUnits > BigInt(userPlan.monthly_limit)
-    ) {
-      rejectionLevel = "user";
-      rejectionRule = "monthly_limit";
-    }
+
+    const { rejectionLevel, rejectionRule } = checkQuota({
+      account: {
+        monthlyLimit: BigInt(accountPlan.monthly_limit),
+        maxPerRequest: accountPlan.max_per_request,
+        usedUnits: accountUsed
+      },
+      user: {
+        monthlyLimit: BigInt(userPlan.monthly_limit),
+        maxPerRequest: userPlan.max_per_request,
+        usedUnits: userUsed
+      },
+      requestedUnits: units
+    });
+
     if (rejectionLevel && rejectionRule) {
       await client.query(
         `INSERT INTO usage_requests
@@ -170,7 +189,9 @@ router.post("/", authenticateApiKey, async (req, res) => {
           rejectionRule
         ]
       );
+
       await client.query("COMMIT");
+
       return res.status(429).json({
         message: "Quota exceeded",
         level: rejectionLevel,
@@ -178,6 +199,7 @@ router.post("/", authenticateApiKey, async (req, res) => {
         requested_units: units
       });
     }
+
     await client.query(
       `INSERT INTO usage_records
          (account_id, user_id, month, used_units)
@@ -188,6 +210,7 @@ router.post("/", authenticateApiKey, async (req, res) => {
          used_units = usage_records.used_units + EXCLUDED.used_units`,
       [accountId, units]
     );
+
     await client.query(
       `INSERT INTO usage_records
          (account_id, user_id, month, used_units)
@@ -198,13 +221,16 @@ router.post("/", authenticateApiKey, async (req, res) => {
          used_units = usage_records.used_units + EXCLUDED.used_units`,
       [accountId, userPlan.id, units]
     );
+
     await client.query(
       `INSERT INTO usage_requests
          (account_id, user_id, request_id, units, accepted)
        VALUES ($1, $2, $3, $4, TRUE)`,
       [accountId, userPlan.id, request_id.trim(), units]
     );
+
     await client.query("COMMIT");
+
     return res.status(201).json({
       message: "Usage recorded successfully",
       request_id: request_id.trim(),
@@ -213,24 +239,30 @@ router.post("/", authenticateApiKey, async (req, res) => {
       account_used: (accountUsed + requestedUnits).toString(),
       user_used: (userUsed + requestedUnits).toString()
     });
+
   } catch (error) {
     try {
       await client.query("ROLLBACK");
     } catch (rollbackError) {
       console.error("Rollback failed:", rollbackError);
     }
+
     console.error("Failed to record usage:", error);
+
     return res.status(500).json({
       message: "Failed to record usage"
     });
+
   } finally {
     client.release();
   }
 });
+
 // Get paginated usage history
 router.get("/history", authenticateApiKey, async (req, res) => {
   const accountId = res.locals.account.id;
   const externalId = req.query.external_id;
+
   if (
     externalId !== undefined &&
     (typeof externalId !== "string" || externalId.trim() === "")
@@ -239,8 +271,10 @@ router.get("/history", authenticateApiKey, async (req, res) => {
       message: "external_id must be a non-empty string"
     });
   }
+
   const page = Number(req.query.page ?? 1);
   const limit = Number(req.query.limit ?? 10);
+
   if (
     !Number.isSafeInteger(page) ||
     page < 1 ||
@@ -253,7 +287,9 @@ router.get("/history", authenticateApiKey, async (req, res) => {
       message: "Page must be positive and limit must be between 1 and 100"
     });
   }
+
   const offset = (page - 1) * limit;
+
   try {
     const countResult = await pool.query(
       `SELECT COUNT(*) AS total
@@ -263,8 +299,10 @@ router.get("/history", authenticateApiKey, async (req, res) => {
          AND ($2::text IS NULL OR u.external_id = $2)`,
       [accountId, typeof externalId === "string" ? externalId.trim() : null]
     );
+
     const total = Number(countResult.rows[0].total);
     const totalPages = Math.ceil(total / limit);
+
     const result = await pool.query(
       `SELECT
          r.id,
@@ -288,6 +326,7 @@ router.get("/history", authenticateApiKey, async (req, res) => {
         offset
       ]
     );
+
     return res.json({
       account_id: accountId,
       page,
@@ -297,16 +336,20 @@ router.get("/history", authenticateApiKey, async (req, res) => {
       count: result.rows.length,
       requests: result.rows
     });
+
   } catch (error) {
     console.error("Failed to load usage history:", error);
+
     return res.status(500).json({
       message: "Failed to load usage history"
     });
   }
 });
+
 // Get account usage summary
 router.get("/summary", authenticateApiKey, async (req, res) => {
   const accountId = res.locals.account.id;
+
   try {
     const result = await pool.query(
       `SELECT
@@ -323,18 +366,22 @@ router.get("/summary", authenticateApiKey, async (req, res) => {
        WHERE a.id = $1`,
       [accountId]
     );
+
     if (result.rows.length === 0) {
       return res.status(404).json({
         message: "Account not found"
       });
     }
+
     const account = result.rows[0];
     const monthlyLimit = BigInt(account.monthly_limit);
     const usedUnits = BigInt(account.used_units);
+
     const remainingUnits =
       monthlyLimit > usedUnits
         ? monthlyLimit - usedUnits
         : 0n;
+
     return res.json({
       account_id: account.account_id,
       plan_name: account.plan_name,
@@ -342,17 +389,21 @@ router.get("/summary", authenticateApiKey, async (req, res) => {
       used_units: usedUnits.toString(),
       remaining_units: remainingUnits.toString()
     });
+
   } catch (error) {
     console.error("Failed to load usage summary:", error);
+
     return res.status(500).json({
       message: "Failed to load usage summary"
     });
   }
 });
+
 // Get user usage summary
 router.get("/users/:externalId/summary", authenticateApiKey, async (req, res) => {
   const accountId = res.locals.account.id;
   const externalId = req.params.externalId;
+
   try {
     const result = await pool.query(
       `SELECT
@@ -371,18 +422,22 @@ router.get("/users/:externalId/summary", authenticateApiKey, async (req, res) =>
          AND u.external_id = $2`,
       [accountId, externalId]
     );
+
     if (result.rows.length === 0) {
       return res.status(404).json({
         message: "User not found"
       });
     }
+
     const user = result.rows[0];
     const monthlyLimit = BigInt(user.monthly_limit);
     const usedUnits = BigInt(user.used_units);
+
     const remainingUnits =
       monthlyLimit > usedUnits
         ? monthlyLimit - usedUnits
         : 0n;
+
     return res.json({
       user_id: user.user_id,
       external_id: user.external_id,
@@ -391,11 +446,14 @@ router.get("/users/:externalId/summary", authenticateApiKey, async (req, res) =>
       used_units: usedUnits.toString(),
       remaining_units: remainingUnits.toString()
     });
+
   } catch (error) {
     console.error("Failed to load user usage summary:", error);
+
     return res.status(500).json({
       message: "Failed to load user usage summary"
     });
   }
 });
+
 export default router;
