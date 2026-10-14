@@ -1,13 +1,18 @@
 
 import { Router } from "express";
 import pool from "../config/database.js";
+import { authenticateApiKey } from "../middleware/auth.js";
 
 const router = Router();
 
+// Get default plans
 router.get("/", async (req, res) => {
   try {
     const result = await pool.query(
-      "SELECT id, name, plan_type, monthly_limit, max_per_request FROM plans WHERE account_id IS NULL ORDER BY id"
+      `SELECT id, name, plan_type, monthly_limit, max_per_request
+       FROM plans
+       WHERE account_id IS NULL
+       ORDER BY id`
     );
 
     res.json(result.rows);
@@ -16,6 +21,60 @@ router.get("/", async (req, res) => {
 
     res.status(500).json({
       message: "Failed to fetch plans"
+    });
+  }
+});
+
+// Create a custom plan for the authenticated account
+router.post("/", authenticateApiKey, async (req, res) => {
+  const { name, plan_type, monthly_limit, max_per_request } = req.body ?? {};
+  const accountId = res.locals.account.id;
+
+  if (
+    typeof name !== "string" ||
+    name.trim() === "" ||
+    name.trim().length > 100 ||
+    !["account", "user"].includes(plan_type) ||
+    !Number.isSafeInteger(monthly_limit) ||
+    monthly_limit < 0 ||
+    !Number.isSafeInteger(max_per_request) ||
+    max_per_request <= 0 ||
+    max_per_request > 2147483647
+  ) {
+    return res.status(400).json({
+      message: "Invalid plan details"
+    });
+  }
+
+  try {
+    const result = await pool.query(
+      `INSERT INTO plans
+         (name, plan_type, account_id, monthly_limit, max_per_request)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT DO NOTHING
+       RETURNING id, name, plan_type, account_id,
+                 monthly_limit, max_per_request`,
+      [
+        name.trim(),
+        plan_type,
+        accountId,
+        monthly_limit,
+        max_per_request
+      ]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(409).json({
+        message: "A plan with this name and type already exists for this account"
+      });
+    }
+
+    return res.status(201).json(result.rows[0]);
+  } catch (error) {
+    console.error("Failed to create custom plan:", error);
+
+    return res.status(500).json({
+      message: "Failed to create custom plan"
     });
   }
 });
