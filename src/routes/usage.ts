@@ -142,7 +142,7 @@ router.post("/", authenticateApiKey, async (req, res) => {
             FROM usage_records
             WHERE account_id = $1
               AND user_id IS NULL
-              AND month = DATE_TRUNC('month', NOW())::date),
+              AND month = (DATE_TRUNC('month', NOW() AT TIME ZONE 'UTC'))::date),
            0
          ) AS account_used,
          COALESCE(
@@ -150,7 +150,7 @@ router.post("/", authenticateApiKey, async (req, res) => {
             FROM usage_records
             WHERE account_id = $1
               AND user_id = $2
-              AND month = DATE_TRUNC('month', NOW())::date),
+              AND month = (DATE_TRUNC('month', NOW() AT TIME ZONE 'UTC'))::date),
            0
          ) AS user_used`,
       [accountId, userPlan.id]
@@ -203,7 +203,7 @@ router.post("/", authenticateApiKey, async (req, res) => {
     await client.query(
       `INSERT INTO usage_records
          (account_id, user_id, month, used_units)
-       VALUES ($1, NULL, DATE_TRUNC('month', NOW())::date, $2)
+       VALUES ($1, NULL, (DATE_TRUNC('month', NOW() AT TIME ZONE 'UTC'))::date, $2)
        ON CONFLICT (account_id, month)
        WHERE user_id IS NULL
        DO UPDATE SET
@@ -214,7 +214,7 @@ router.post("/", authenticateApiKey, async (req, res) => {
     await client.query(
       `INSERT INTO usage_records
          (account_id, user_id, month, used_units)
-       VALUES ($1, $2, DATE_TRUNC('month', NOW())::date, $3)
+       VALUES ($1, $2, (DATE_TRUNC('month', NOW() AT TIME ZONE 'UTC'))::date, $3)
        ON CONFLICT (user_id, month)
        WHERE user_id IS NOT NULL
        DO UPDATE SET
@@ -362,7 +362,7 @@ router.get("/summary", authenticateApiKey, async (req, res) => {
        LEFT JOIN usage_records r
          ON r.account_id = a.id
          AND r.user_id IS NULL
-         AND r.month = DATE_TRUNC('month', NOW())::date
+         AND r.month = (DATE_TRUNC('month', NOW() AT TIME ZONE 'UTC'))::date
        WHERE a.id = $1`,
       [accountId]
     );
@@ -417,7 +417,7 @@ router.get("/users/:externalId/summary", authenticateApiKey, async (req, res) =>
        LEFT JOIN usage_records r
          ON r.user_id = u.id
          AND r.account_id = u.account_id
-         AND r.month = DATE_TRUNC('month', NOW())::date
+         AND r.month = (DATE_TRUNC('month', NOW() AT TIME ZONE 'UTC'))::date
        WHERE u.account_id = $1
          AND u.external_id = $2`,
       [accountId, externalId]
