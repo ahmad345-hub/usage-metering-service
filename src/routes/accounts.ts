@@ -11,11 +11,12 @@ router.post("/", async (req, res) => {
   if (
     typeof name !== "string" ||
     name.trim() === "" ||
+    name.trim().length > 100 ||
     !Number.isSafeInteger(plan_id) ||
     plan_id <= 0
   ) {
     return res.status(400).json({
-      message: "Valid name and plan_id are required"
+      message: "Valid name (1-100 characters) and plan_id are required"
     });
   }
 
