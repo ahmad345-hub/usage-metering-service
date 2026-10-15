@@ -34,3 +34,33 @@ test("GET /api/usage/summary rejects an invalid API key", async () => {
     message: "Invalid API key",
   });
 });
+
+
+test("PATCH /api/plans/:id cannot update a default plan", async () => {
+  const plansResponse = await fetch(`${baseUrl}/api/plans`);
+  assert.equal(plansResponse.status, 200);
+
+  const plans = await plansResponse.json() as Array<{
+    id: number;
+    plan_type: string;
+  }>;
+
+  const defaultPlan = plans.find((plan) => plan.plan_type === "account");
+  assert.ok(defaultPlan, "A default account plan should exist");
+
+  const response = await fetch(`${baseUrl}/api/plans/${defaultPlan.id}`, {
+    method: "PATCH",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": "invalid-test-api-key",
+    },
+    body: JSON.stringify({
+      name: "Unauthorized Plan Change",
+    }),
+  });
+
+  assert.equal(response.status, 401);
+  assert.deepEqual(await response.json(), {
+    message: "Invalid API key",
+  });
+});
