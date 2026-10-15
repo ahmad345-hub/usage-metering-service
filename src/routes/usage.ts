@@ -142,7 +142,10 @@ router.post("/", authenticateApiKey, async (req, res) => {
             FROM usage_records
             WHERE account_id = $1
               AND user_id IS NULL
-              AND month = (DATE_TRUNC('month', NOW() AT TIME ZONE 'UTC'))::date),
+              AND month = DATE_TRUNC(
+                'month',
+                NOW() AT TIME ZONE 'UTC'
+              )::date),
            0
          ) AS account_used,
          COALESCE(
@@ -150,7 +153,10 @@ router.post("/", authenticateApiKey, async (req, res) => {
             FROM usage_records
             WHERE account_id = $1
               AND user_id = $2
-              AND month = (DATE_TRUNC('month', NOW() AT TIME ZONE 'UTC'))::date),
+              AND month = DATE_TRUNC(
+                'month',
+                NOW() AT TIME ZONE 'UTC'
+              )::date),
            0
          ) AS user_used`,
       [accountId, userPlan.id]
@@ -203,7 +209,12 @@ router.post("/", authenticateApiKey, async (req, res) => {
     await client.query(
       `INSERT INTO usage_records
          (account_id, user_id, month, used_units)
-       VALUES ($1, NULL, (DATE_TRUNC('month', NOW() AT TIME ZONE 'UTC'))::date, $2)
+       VALUES (
+         $1,
+         NULL,
+         DATE_TRUNC('month', NOW() AT TIME ZONE 'UTC')::date,
+         $2
+       )
        ON CONFLICT (account_id, month)
        WHERE user_id IS NULL
        DO UPDATE SET
@@ -214,7 +225,12 @@ router.post("/", authenticateApiKey, async (req, res) => {
     await client.query(
       `INSERT INTO usage_records
          (account_id, user_id, month, used_units)
-       VALUES ($1, $2, (DATE_TRUNC('month', NOW() AT TIME ZONE 'UTC'))::date, $3)
+       VALUES (
+         $1,
+         $2,
+         DATE_TRUNC('month', NOW() AT TIME ZONE 'UTC')::date,
+         $3
+       )
        ON CONFLICT (user_id, month)
        WHERE user_id IS NOT NULL
        DO UPDATE SET
@@ -239,7 +255,6 @@ router.post("/", authenticateApiKey, async (req, res) => {
       account_used: (accountUsed + requestedUnits).toString(),
       user_used: (userUsed + requestedUnits).toString()
     });
-
   } catch (error) {
     try {
       await client.query("ROLLBACK");
@@ -252,16 +267,16 @@ router.post("/", authenticateApiKey, async (req, res) => {
     return res.status(500).json({
       message: "Failed to record usage"
     });
-
   } finally {
     client.release();
   }
 });
 
-// Get paginated usage history
+// Get paginated usage history with optional month and user filters
 router.get("/history", authenticateApiKey, async (req, res) => {
   const accountId = res.locals.account.id;
   const externalId = req.query.external_id;
+  const month = req.query.month;
 
   if (
     externalId !== undefined &&
@@ -269,6 +284,18 @@ router.get("/history", authenticateApiKey, async (req, res) => {
   ) {
     return res.status(400).json({
       message: "external_id must be a non-empty string"
+    });
+  }
+
+  if (
+    month !== undefined &&
+    (
+      typeof month !== "string" ||
+      !/^\d{4}-(0[1-9]|1[0-2])$/.test(month)
+    )
+  ) {
+    return res.status(400).json({
+      message: "month must use YYYY-MM format, for example 2026-09"
     });
   }
 
@@ -290,14 +317,33 @@ router.get("/history", authenticateApiKey, async (req, res) => {
 
   const offset = (page - 1) * limit;
 
+  const normalizedExternalId =
+    typeof externalId === "string" ? externalId.trim() : null;
+
+  const selectedMonth =
+    typeof month === "string" ? month : null;
+
+  // Convert YYYY-MM to YYYY-MM-01 before PostgreSQL casts it to a date.
+  const monthStart =
+    selectedMonth === null ? null : `${selectedMonth}-01`;
+
   try {
     const countResult = await pool.query(
       `SELECT COUNT(*) AS total
        FROM usage_requests r
        JOIN users u ON r.user_id = u.id
        WHERE r.account_id = $1
-         AND ($2::text IS NULL OR u.external_id = $2)`,
-      [accountId, typeof externalId === "string" ? externalId.trim() : null]
+         AND ($2::text IS NULL OR u.external_id = $2)
+         AND (
+           $3::date IS NULL
+           OR (
+             r.created_at >= ($3::date AT TIME ZONE 'UTC')
+             AND r.created_at < (
+               ($3::date + INTERVAL '1 month') AT TIME ZONE 'UTC'
+             )
+           )
+         )`,
+      [accountId, normalizedExternalId, monthStart]
     );
 
     const total = Number(countResult.rows[0].total);
@@ -317,11 +363,21 @@ router.get("/history", authenticateApiKey, async (req, res) => {
        JOIN users u ON r.user_id = u.id
        WHERE r.account_id = $1
          AND ($2::text IS NULL OR u.external_id = $2)
+         AND (
+           $3::date IS NULL
+           OR (
+             r.created_at >= ($3::date AT TIME ZONE 'UTC')
+             AND r.created_at < (
+               ($3::date + INTERVAL '1 month') AT TIME ZONE 'UTC'
+             )
+           )
+         )
        ORDER BY r.created_at DESC, r.id DESC
-       LIMIT $3 OFFSET $4`,
+       LIMIT $4 OFFSET $5`,
       [
         accountId,
-        typeof externalId === "string" ? externalId.trim() : null,
+        normalizedExternalId,
+        monthStart,
         limit,
         offset
       ]
@@ -331,12 +387,12 @@ router.get("/history", authenticateApiKey, async (req, res) => {
       account_id: accountId,
       page,
       limit,
+      month: selectedMonth,
       total,
       total_pages: totalPages,
       count: result.rows.length,
       requests: result.rows
     });
-
   } catch (error) {
     console.error("Failed to load usage history:", error);
 
@@ -346,9 +402,37 @@ router.get("/history", authenticateApiKey, async (req, res) => {
   }
 });
 
-// Get account usage summary
+// Get account usage summary for a selected UTC month
 router.get("/summary", authenticateApiKey, async (req, res) => {
   const accountId = res.locals.account.id;
+  const month = req.query.month;
+
+  if (
+    month !== undefined &&
+    (
+      typeof month !== "string" ||
+      !/^\d{4}-(0[1-9]|1[0-2])$/.test(month)
+    )
+  ) {
+    return res.status(400).json({
+      message: "month must use YYYY-MM format, for example 2026-09"
+    });
+  }
+
+  const selectedMonth =
+    typeof month === "string" ? month : null;
+
+  const monthStart =
+    selectedMonth === null ? null : `${selectedMonth}-01`;
+
+  const currentDate = new Date();
+
+  const currentUtcMonth =
+    `${currentDate.getUTCFullYear()}-${String(
+      currentDate.getUTCMonth() + 1
+    ).padStart(2, "0")}`;
+
+  const responseMonth = selectedMonth ?? currentUtcMonth;
 
   try {
     const result = await pool.query(
@@ -362,9 +446,15 @@ router.get("/summary", authenticateApiKey, async (req, res) => {
        LEFT JOIN usage_records r
          ON r.account_id = a.id
          AND r.user_id IS NULL
-         AND r.month = (DATE_TRUNC('month', NOW() AT TIME ZONE 'UTC'))::date
+         AND r.month = COALESCE(
+           $2::date,
+           DATE_TRUNC(
+             'month',
+             NOW() AT TIME ZONE 'UTC'
+           )::date
+         )
        WHERE a.id = $1`,
-      [accountId]
+      [accountId, monthStart]
     );
 
     if (result.rows.length === 0) {
@@ -378,18 +468,16 @@ router.get("/summary", authenticateApiKey, async (req, res) => {
     const usedUnits = BigInt(account.used_units);
 
     const remainingUnits =
-      monthlyLimit > usedUnits
-        ? monthlyLimit - usedUnits
-        : 0n;
+      monthlyLimit > usedUnits ? monthlyLimit - usedUnits : 0n;
 
     return res.json({
       account_id: account.account_id,
+      month: responseMonth,
       plan_name: account.plan_name,
       monthly_limit: monthlyLimit.toString(),
       used_units: usedUnits.toString(),
       remaining_units: remainingUnits.toString()
     });
-
   } catch (error) {
     console.error("Failed to load usage summary:", error);
 
@@ -399,61 +487,97 @@ router.get("/summary", authenticateApiKey, async (req, res) => {
   }
 });
 
-// Get user usage summary
-router.get("/users/:externalId/summary", authenticateApiKey, async (req, res) => {
-  const accountId = res.locals.account.id;
-  const externalId = req.params.externalId;
+// Get user usage summary for a selected UTC month
+router.get(
+  "/users/:externalId/summary",
+  authenticateApiKey,
+  async (req, res) => {
+    const accountId = res.locals.account.id;
+    const externalId = req.params.externalId;
+    const month = req.query.month;
 
-  try {
-    const result = await pool.query(
-      `SELECT
-         u.id AS user_id,
-         u.external_id,
-         p.name AS plan_name,
-         p.monthly_limit,
-         COALESCE(r.used_units, 0) AS used_units
-       FROM users u
-       JOIN plans p ON u.plan_id = p.id
-       LEFT JOIN usage_records r
-         ON r.user_id = u.id
-         AND r.account_id = u.account_id
-         AND r.month = (DATE_TRUNC('month', NOW() AT TIME ZONE 'UTC'))::date
-       WHERE u.account_id = $1
-         AND u.external_id = $2`,
-      [accountId, externalId]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({
-        message: "User not found"
+    if (
+      month !== undefined &&
+      (
+        typeof month !== "string" ||
+        !/^\d{4}-(0[1-9]|1[0-2])$/.test(month)
+      )
+    ) {
+      return res.status(400).json({
+        message: "month must use YYYY-MM format, for example 2026-09"
       });
     }
 
-    const user = result.rows[0];
-    const monthlyLimit = BigInt(user.monthly_limit);
-    const usedUnits = BigInt(user.used_units);
+    const selectedMonth =
+      typeof month === "string" ? month : null;
 
-    const remainingUnits =
-      monthlyLimit > usedUnits
-        ? monthlyLimit - usedUnits
-        : 0n;
+    const monthStart =
+      selectedMonth === null ? null : `${selectedMonth}-01`;
 
-    return res.json({
-      user_id: user.user_id,
-      external_id: user.external_id,
-      plan_name: user.plan_name,
-      monthly_limit: monthlyLimit.toString(),
-      used_units: usedUnits.toString(),
-      remaining_units: remainingUnits.toString()
-    });
+    const currentDate = new Date();
 
-  } catch (error) {
-    console.error("Failed to load user usage summary:", error);
+    const currentUtcMonth =
+      `${currentDate.getUTCFullYear()}-${String(
+        currentDate.getUTCMonth() + 1
+      ).padStart(2, "0")}`;
 
-    return res.status(500).json({
-      message: "Failed to load user usage summary"
-    });
+    const responseMonth = selectedMonth ?? currentUtcMonth;
+
+    try {
+      const result = await pool.query(
+        `SELECT
+           u.id AS user_id,
+           u.external_id,
+           p.name AS plan_name,
+           p.monthly_limit,
+           COALESCE(r.used_units, 0) AS used_units
+         FROM users u
+         JOIN plans p ON u.plan_id = p.id
+         LEFT JOIN usage_records r
+           ON r.user_id = u.id
+           AND r.account_id = u.account_id
+           AND r.month = COALESCE(
+             $3::date,
+             DATE_TRUNC(
+               'month',
+               NOW() AT TIME ZONE 'UTC'
+             )::date
+           )
+         WHERE u.account_id = $1
+           AND u.external_id = $2`,
+        [accountId, externalId, monthStart]
+      );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({
+          message: "User not found"
+        });
+      }
+
+      const user = result.rows[0];
+      const monthlyLimit = BigInt(user.monthly_limit);
+      const usedUnits = BigInt(user.used_units);
+
+      const remainingUnits =
+        monthlyLimit > usedUnits ? monthlyLimit - usedUnits : 0n;
+
+      return res.json({
+        user_id: user.user_id,
+        external_id: user.external_id,
+        month: responseMonth,
+        plan_name: user.plan_name,
+        monthly_limit: monthlyLimit.toString(),
+        used_units: usedUnits.toString(),
+        remaining_units: remainingUnits.toString()
+      });
+    } catch (error) {
+      console.error("Failed to load user usage summary:", error);
+
+      return res.status(500).json({
+        message: "Failed to load user usage summary"
+      });
+    }
   }
-});
+);
 
 export default router;
