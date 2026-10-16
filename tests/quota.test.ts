@@ -124,3 +124,26 @@ test("Reject usage when account request limit is exceeded", () => {
   });
 });
 
+
+
+test("Accept usage when user reaches monthly quota exactly", () => {
+  const result = checkQuota({
+    account: {
+      monthlyLimit: 2400n,
+      maxPerRequest: 35,
+      usedUnits: 100n
+    },
+    user: {
+      monthlyLimit: 500n,
+      maxPerRequest: 25,
+      usedUnits: 490n
+    },
+    requestedUnits: 10
+  });
+
+  assert.deepEqual(result, {
+    allowed: true,
+    rejectionLevel: null,
+    rejectionRule: null
+  });
+});
