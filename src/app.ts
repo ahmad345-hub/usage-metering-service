@@ -1,43 +1,24 @@
-
 import express from "express";
-import pool from "./config/database.js";
+import { pool } from "./config/database.js";
+import { errorHandler, notFound } from "./middleware/errors.js";
+import accountRoutes from "./routes/accounts.js";
+import planRoutes from "./routes/plans.js";
+import usageRoutes from "./routes/usage.js";
+import userRoutes from "./routes/users.js";
 
-import plansRouter from "./routes/plans.js";
-import accountsRouter from "./routes/accounts.js";
-import usersRouter from "./routes/users.js";
-import usageRouter from "./routes/usage.js";
-
-const app = express();
-
-app.use(express.json());
-
-app.use("/api/plans", plansRouter);
-app.use("/api/accounts", accountsRouter);
-app.use("/api/users", usersRouter);
-app.use("/api/usage", usageRouter);
-
-app.get("/", (_req, res) => {
-  res.json({
-    message: "Quota service is running"
-  });
-});
+export const app = express();
+app.disable("x-powered-by");
+app.use(express.json({ limit: "100kb" }));
 
 app.get("/health", async (_req, res) => {
-  try {
-    await pool.query("SELECT 1");
-
-    res.json({
-      status: "ok",
-      database: "connected"
-    });
-  } catch (error) {
-    console.error("Database connection failed:", error);
-
-    res.status(503).json({
-      status: "error",
-      database: "disconnected"
-    });
-  }
+  await pool.query("SELECT 1");
+  res.json({ status: "ok", database: "connected" });
 });
 
-export default app;
+app.use("/api/accounts", accountRoutes);
+app.use("/api/users", userRoutes);
+app.use("/api/plans", planRoutes);
+app.use("/api/usage", usageRoutes);
+
+app.use(notFound);
+app.use(errorHandler);

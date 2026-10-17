@@ -1,61 +1,65 @@
-
 import { Router } from "express";
-import pool from "../config/database.js";
+import { pool } from "../config/database.js";
+import { withAccountLock } from "../db/tx.js";
+import { accountOf, authenticateApiKey } from "../middleware/auth.js";
+import { findAssignablePlan, planColumns, planFromRow, type Queryable } from "../services/planService.js";
 import { generateApiKey, hashApiKey } from "../utils/apiKey.js";
+import { ApiError } from "../utils/errors.js";
+import { bodyOf, planIdOf, requireString } from "../utils/validation.js";
 
 const router = Router();
 
+async function accountView(db: Queryable, accountId: number) {
+  const { rows } = await db.query(
+    `SELECT a.id, a.name, a.created_at, ${planColumns("p", "plan")}
+     FROM accounts a JOIN plans p ON p.id = a.plan_id WHERE a.id = $1`,
+    [accountId],
+  );
+  const r = rows[0];
+  return { id: r.id, name: r.name, created_at: r.created_at, plan: planFromRow(r, "plan") };
+}
+
+// Open by design: this is how an application obtains its API key (see README, assumptions).
 router.post("/", async (req, res) => {
-  const { name, plan_id } = req.body ?? {};
+  const body = bodyOf(req);
+  const name = requireString(body.name, "name", 255);
+  const planId = planIdOf(body.plan_id);
 
-  if (
-    typeof name !== "string" ||
-    name.trim() === "" ||
-    name.trim().length > 100 ||
-    !Number.isSafeInteger(plan_id) ||
-    plan_id <= 0
-  ) {
-    return res.status(400).json({
-      message: "Valid name (1-100 characters) and plan_id are required"
-    });
-  }
+  const apiKey = generateApiKey();
+  const accountId = await createAccount(name, planId, apiKey);
+  res.status(201).json({ ...(await accountView(pool, accountId)), api_key: apiKey });
+});
 
-  try {
-    const planResult = await pool.query(
-      `SELECT id FROM plans
-       WHERE id = $1
-       AND plan_type = 'account'
-       AND account_id IS NULL`,
-      [plan_id]
-    );
+async function createAccount(name: string, planId: number, apiKey: string): Promise<number> {
+  // A brand-new account owns no custom plans, so only a predefined account plan can be chosen.
+  const { rows: plans } = await pool.query(`SELECT 1 FROM plans WHERE id = $1 AND plan_type = 'account' AND account_id IS NULL`, [planId]);
+  if (plans.length === 0) throw new ApiError(400, "invalid_plan", "plan_id must be a predefined account plan (see GET /api/plans?type=account)");
+  const { rows } = await pool.query(
+    `INSERT INTO accounts (name, api_key_hash, plan_id) VALUES ($1, $2, $3) RETURNING id`,
+    [name, hashApiKey(apiKey), planId],
+  );
+  return rows[0].id;
+}
 
-    if (planResult.rows.length === 0) {
-      return res.status(400).json({
-        message: "Invalid account plan"
-      });
+router.use(authenticateApiKey);
+
+router.get("/me", async (_req, res) => {
+  res.json(await accountView(pool, accountOf(res).id));
+});
+
+// Assign a predefined account plan or one of the account's own custom account plans.
+// Existing usage is kept; the new plan simply applies to the next request.
+router.put("/me/plan", async (req, res) => {
+  const accountId = accountOf(res).id;
+  const planId = planIdOf(bodyOf(req).plan_id);
+  const view = await withAccountLock(accountId, async (db) => {
+    if (!(await findAssignablePlan(db, accountId, planId, "account"))) {
+      throw new ApiError(400, "invalid_plan", "plan_id must be a predefined account plan or one of your own account plans");
     }
-
-    const apiKey = generateApiKey();
-    const apiKeyHash = hashApiKey(apiKey);
-
-    const result = await pool.query(
-      `INSERT INTO accounts (name, plan_id, api_key_hash)
-       VALUES ($1, $2, $3)
-       RETURNING id, name, plan_id, created_at`,
-      [name.trim(), plan_id, apiKeyHash]
-    );
-
-    return res.status(201).json({
-      ...result.rows[0],
-      api_key: apiKey
-    });
-  } catch (error) {
-    console.error("Failed to create account:", error);
-
-    return res.status(500).json({
-      message: "Failed to create account"
-    });
-  }
+    await db.query("UPDATE accounts SET plan_id = $2 WHERE id = $1", [accountId, planId]);
+    return accountView(db, accountId);
+  });
+  res.json(view);
 });
 
 export default router;

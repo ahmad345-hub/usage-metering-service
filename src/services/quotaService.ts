@@ -1,49 +1,41 @@
+// Pure business rules: no database, no HTTP. Easy to unit test and to extend with new rule types.
 
-export type RejectionLevel = "account" | "user";
-export type RejectionRule = "monthly_limit" | "max_per_request";
+export type Level = "account" | "user";
+export type Rule = "monthly_limit" | "max_per_request";
 
-interface QuotaLimits {
-  monthlyLimit: bigint;
+export interface LevelState {
+  monthlyLimit: number;
   maxPerRequest: number;
-  usedUnits: bigint;
+  usedUnits: number;
 }
 
-interface QuotaCheckInput {
-  account: QuotaLimits;
-  user: QuotaLimits;
-  requestedUnits: number;
-}
-
-interface QuotaCheckResult {
+export interface QuotaDecision {
   allowed: boolean;
-  rejectionLevel: RejectionLevel | null;
-  rejectionRule: RejectionRule | null;
+  rejectionLevel: Level | null;
+  rejectionRule: Rule | null;
 }
 
-export function checkQuota(input: QuotaCheckInput): QuotaCheckResult {
+/** Never negative: a limit lowered below existing usage shows 0 remaining. */
+export function remainingUnits(monthlyLimit: number, usedUnits: number): number {
+  return Math.max(0, monthlyLimit - usedUnits);
+}
+
+/**
+ * Both plans apply together and the full amount is all-or-nothing.
+ * Evaluation order (the first failing rule is reported): account per-request, user per-request,
+ * account monthly, user monthly. Per-request rules come first because they can never succeed on a
+ * retry, whereas a monthly rule may clear when allowance is raised or a new month starts.
+ */
+export function checkQuota(input: { account: LevelState; user: LevelState; requestedUnits: number }): QuotaDecision {
   const { account, user, requestedUnits } = input;
-  const units = BigInt(requestedUnits);
-
-  let rejectionLevel: RejectionLevel | null = null;
-  let rejectionRule: RejectionRule | null = null;
-
-  if (requestedUnits > account.maxPerRequest) {
-    rejectionLevel = "account";
-    rejectionRule = "max_per_request";
-  } else if (requestedUnits > user.maxPerRequest) {
-    rejectionLevel = "user";
-    rejectionRule = "max_per_request";
-  } else if (account.usedUnits + units > account.monthlyLimit) {
-    rejectionLevel = "account";
-    rejectionRule = "monthly_limit";
-  } else if (user.usedUnits + units > user.monthlyLimit) {
-    rejectionLevel = "user";
-    rejectionRule = "monthly_limit";
-  }
-
-  return {
-    allowed: rejectionLevel === null,
-    rejectionLevel,
-    rejectionRule
-  };
+  const checks: Array<[Level, Rule, boolean]> = [
+    ["account", "max_per_request", requestedUnits > account.maxPerRequest],
+    ["user", "max_per_request", requestedUnits > user.maxPerRequest],
+    ["account", "monthly_limit", account.usedUnits + requestedUnits > account.monthlyLimit],
+    ["user", "monthly_limit", user.usedUnits + requestedUnits > user.monthlyLimit],
+  ];
+  const failed = checks.find(([, , violated]) => violated);
+  return failed
+    ? { allowed: false, rejectionLevel: failed[0], rejectionRule: failed[1] }
+    : { allowed: true, rejectionLevel: null, rejectionRule: null };
 }

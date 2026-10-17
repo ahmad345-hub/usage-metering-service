@@ -1,271 +1,173 @@
-
-import { test } from "node:test";
 import assert from "node:assert/strict";
+import { after, before, describe, test } from "node:test";
+import { consume, predefinedPlanId, setup, startServer, uniq, type Api } from "./helpers.js";
 
-const baseUrl = "http://localhost:3000";
+let api: Api;
+let close: () => Promise<void>;
+let base: string;
+before(async () => ({ api, close, base } = await startServer()));
+after(() => close());
 
-test("GET /health returns database connection status", async () => {
-  const response = await fetch(`${baseUrl}/health`);
+describe("API key validation", () => {
+  test("rejects a missing key on every protected route", async () => {
+    for (const [method, path] of [
+      ["GET", "/api/accounts/me"], ["GET", "/api/users"], ["POST", "/api/users"], ["GET", "/api/plans/custom"],
+      ["POST", "/api/plans"], ["POST", "/api/usage"], ["GET", "/api/usage/summary"], ["GET", "/api/usage/history"],
+    ]) {
+      const res = await api(method, path);
+      assert.equal(res.status, 401, `${method} ${path}`);
+      assert.equal(res.body.code, "missing_api_key");
+    }
+  });
 
-  assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), {
-    status: "ok",
-    database: "connected",
+  test("rejects an invalid key", async () => {
+    const res = await api("GET", "/api/usage/summary", "qk_not_a_real_key");
+    assert.equal(res.status, 401);
+    assert.equal(res.body.code, "invalid_api_key");
+  });
+
+  test("account creation returns the key once and it works afterwards", async () => {
+    const res = await api("POST", "/api/accounts", null, { name: uniq("a"), plan_id: await predefinedPlanId(api, "Pro") });
+    assert.equal(res.status, 201);
+    assert.match(res.body.api_key, /^qk_[0-9a-f]{64}$/);
+    assert.equal(res.body.plan.name, "Pro");
+    const me = await api("GET", "/api/accounts/me", res.body.api_key);
+    assert.equal(me.status, 200);
+    assert.equal(me.body.api_key, undefined, "the key must not be returned again");
   });
 });
 
-test("GET /api/usage/summary rejects a missing API key", async () => {
-  const response = await fetch(`${baseUrl}/api/usage/summary`);
+describe("predefined plans", () => {
+  test("Starter, Pro, Basic and Premium exist and are read-only", async () => {
+    const plans = (await api("GET", "/api/plans")).body;
+    assert.deepEqual(plans.map((p: any) => p.name).sort(), ["Basic", "Premium", "Pro", "Starter"]);
+    assert.ok(plans.every((p: any) => p.predefined));
+    const { key } = await setup(api, { monthly: 100, perRequest: 10 }, {});
+    const res = await api("PATCH", `/api/plans/${plans[0].id}`, key, { monthly_limit: 1 });
+    assert.equal(res.status, 404);
+  });
 
-  assert.equal(response.status, 401);
-  assert.deepEqual(await response.json(), {
-    message: "API key is required",
+  test("a new account can only start on a predefined account plan", async () => {
+    const res = await api("POST", "/api/accounts", null, { name: "x", plan_id: await predefinedPlanId(api, "Basic") });
+    assert.equal(res.status, 400);
   });
 });
 
-test("GET /api/usage/summary rejects an invalid API key", async () => {
-  const response = await fetch(`${baseUrl}/api/usage/summary`, {
-    headers: {
-      "x-api-key": "invalid-test-api-key",
-    },
+describe("custom plans and assignment", () => {
+  test("create, view, update; several users share a plan but keep separate usage", async () => {
+    const { key, userPlanIds } = await setup(api, { monthly: 1000, perRequest: 100 }, { a: { monthly: 50, perRequest: 10 } });
+    const shared = userPlanIds.a;
+    await api("POST", "/api/users", key, { external_id: "b", plan_id: shared });
+    await consume(api, key, "a", 10);
+    const b = await api("GET", "/api/usage/users/b/summary", key);
+    assert.equal(b.body.used_units, 0);
+    assert.equal(b.body.plan.id, shared);
+
+    const patched = await api("PATCH", `/api/plans/${shared}`, key, { monthly_limit: 60 });
+    assert.equal(patched.status, 200);
+    assert.equal((await api("GET", `/api/plans/${shared}`, key)).body.monthly_limit, 60);
+    assert.ok((await api("GET", "/api/plans/custom", key)).body.some((p: any) => p.id === shared));
   });
 
-  assert.equal(response.status, 401);
-  assert.deepEqual(await response.json(), {
-    message: "Invalid API key",
+  test("duplicate plan name and bad numbers are rejected with 4xx", async () => {
+    const { key } = await setup(api, { monthly: 100, perRequest: 10 }, {});
+    const body = { name: "dup", plan_type: "user", monthly_limit: 10, max_per_request: 1 };
+    assert.equal((await api("POST", "/api/plans", key, body)).status, 201);
+    assert.equal((await api("POST", "/api/plans", key, body)).status, 409);
+    assert.equal((await api("POST", "/api/plans", key, { ...body, name: "n", monthly_limit: -1 })).status, 400);
+    assert.equal((await api("POST", "/api/plans", key, { ...body, name: "n", max_per_request: 0 })).status, 400);
+    assert.equal((await api("POST", "/api/plans", key, { ...body, name: "n", plan_type: "other" })).status, 400);
+  });
+
+  test("assign plans to users and to the account; type is enforced", async () => {
+    const { key, accountPlanId, userPlanIds } = await setup(api, { monthly: 100, perRequest: 10 }, { u: { monthly: 10, perRequest: 5 } });
+    const premium = await predefinedPlanId(api, "Premium");
+    const patched = await api("PATCH", "/api/users/u", key, { plan_id: premium });
+    assert.equal(patched.status, 200);
+    assert.equal(patched.body.plan.name, "Premium");
+    assert.equal((await api("PATCH", "/api/users/u", key, { plan_id: accountPlanId })).status, 400, "account plan on a user");
+    assert.equal((await api("PUT", "/api/accounts/me/plan", key, { plan_id: userPlanIds.u })).status, 400, "user plan on the account");
+    assert.equal((await api("PATCH", "/api/users/ghost", key, { plan_id: premium })).status, 404);
+    const pro = await predefinedPlanId(api, "Pro");
+    assert.equal((await api("PUT", "/api/accounts/me/plan", key, { plan_id: pro })).body.plan.name, "Pro");
+  });
+
+  test("users: list, get, duplicates", async () => {
+    const { key } = await setup(api, { monthly: 100, perRequest: 10 }, { u1: { monthly: 10, perRequest: 5 }, u2: { monthly: 10, perRequest: 5 } });
+    const list = await api("GET", "/api/users?limit=1", key);
+    assert.equal(list.body.total, 2);
+    assert.equal(list.body.users.length, 1);
+    assert.equal((await api("GET", "/api/users/u2", key)).status, 200);
+    const dup = await api("POST", "/api/users", key, { external_id: "u1", plan_id: await predefinedPlanId(api, "Basic") });
+    assert.equal(dup.status, 409);
   });
 });
 
-test("API integration: usage, idempotency, and account isolation", async (t) => {
-  const suffix = `${Date.now()}-${Math.random()
-    .toString(36)
-    .slice(2, 8)}`;
+describe("account isolation", () => {
+  test("an account cannot see, use or change another account's data", async () => {
+    const A = await setup(api, { monthly: 100, perRequest: 10 }, { shared: { monthly: 50, perRequest: 10 }, onlyA: { monthly: 50, perRequest: 10 } });
+    const B = await setup(api, { monthly: 100, perRequest: 10 }, { shared: { monthly: 50, perRequest: 10 } });
 
-  // Find a default account plan.
-  const plansResponse = await fetch(`${baseUrl}/api/plans`);
+    // A's user is invisible to B
+    assert.equal((await consume(api, B.key, "onlyA", 1)).status, 404);
+    assert.equal((await api("GET", "/api/users/onlyA", B.key)).status, 404);
+    assert.equal((await api("GET", "/api/usage/users/onlyA/summary", B.key)).status, 404);
+    assert.equal((await api("PATCH", "/api/users/onlyA", B.key, { plan_id: B.userPlanIds.shared })).status, 404);
 
-  assert.equal(plansResponse.status, 200);
+    // A's custom plans are invisible/immutable/unassignable for B
+    assert.equal((await api("GET", `/api/plans/${A.userPlanIds.onlyA}`, B.key)).status, 404);
+    assert.equal((await api("PATCH", `/api/plans/${A.userPlanIds.onlyA}`, B.key, { monthly_limit: 1 })).status, 404);
+    assert.equal((await api("PATCH", "/api/users/shared", B.key, { plan_id: A.userPlanIds.onlyA })).status, 400);
+    assert.equal((await api("PUT", "/api/accounts/me/plan", B.key, { plan_id: A.accountPlanId })).status, 400);
+    assert.equal((await api("POST", "/api/users", B.key, { external_id: "z", plan_id: A.userPlanIds.onlyA })).status, 400);
+    assert.deepEqual((await api("GET", "/api/plans/custom", B.key)).body.map((p: any) => p.id).sort(),
+      [B.accountPlanId, B.userPlanIds.shared].sort());
 
-  const plans = (await plansResponse.json()) as Array<{
-    id: number;
-    plan_type: string;
-  }>;
+    // Same external_id and same request_id in two accounts are fully independent
+    assert.equal((await consume(api, A.key, "shared", 7, "same-id")).status, 201);
+    const b = await consume(api, B.key, "shared", 3, "same-id");
+    assert.equal(b.status, 201);
+    assert.equal(b.body.replayed, false);
+    assert.equal(b.body.user.used_units, 3);
+    assert.equal(b.body.account.used_units, 3);
 
-  const defaultPlan = plans.find(
-    (plan) => plan.plan_type === "account",
-  );
+    // History and summaries only contain the caller's own data
+    const histB = (await api("GET", "/api/usage/history", B.key)).body;
+    assert.equal(histB.total, 1);
+    assert.equal(histB.requests[0].units, 3);
+    assert.equal((await api("GET", "/api/usage/summary", A.key)).body.account.used_units, 7);
+    assert.equal((await api("GET", "/api/usage/users", B.key)).body.total, 1);
+  });
+});
 
-  assert.ok(defaultPlan, "A default account plan should exist");
-
-  // Create an account and retrieve its API key.
-  async function createAccount(name: string) {
-    const response = await fetch(`${baseUrl}/api/accounts`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        name,
-        plan_id: defaultPlan!.id,
-      }),
-    });
-
-    assert.equal(response.status, 201);
-
-    const account = (await response.json()) as {
-      id: number;
-      api_key: string;
-    };
-
-    assert.ok(account.id);
-    assert.ok(account.api_key);
-
-    return account;
-  }
-
-  const accountA = await createAccount(`Test Account A ${suffix}`);
-  const accountB = await createAccount(`Test Account B ${suffix}`);
-
-  const headersA = {
-    "content-type": "application/json",
-    "x-api-key": accountA.api_key,
-  };
-
-  const headersB = {
-    "content-type": "application/json",
-    "x-api-key": accountB.api_key,
-  };
-
-  // Create a custom user plan for account A.
-  const planResponse = await fetch(`${baseUrl}/api/plans`, {
-    method: "POST",
-    headers: headersA,
-    body: JSON.stringify({
-      name: `Test User Plan ${suffix}`,
-      plan_type: "user",
-      monthly_limit: 500,
-      max_per_request: 25,
-    }),
+describe("validation and errors", () => {
+  test("consume validates its input", async () => {
+    const { key } = await setup(api, { monthly: 100, perRequest: 10 }, { u: { monthly: 10, perRequest: 5 } });
+    const post = (b: unknown) => api("POST", "/api/usage", key, b);
+    for (const units of [0, -1, 1.5, "5", null, 2 ** 40]) {
+      assert.equal((await post({ external_id: "u", request_id: "r", units })).status, 400, `units=${String(units)}`);
+    }
+    assert.equal((await post({ external_id: "u", units: 1 })).status, 400);
+    assert.equal((await post({ request_id: "r", units: 1 })).status, 400);
+    assert.equal((await post({ external_id: "u".repeat(101), request_id: "r", units: 1 })).status, 400);
+    assert.equal((await post({ external_id: "ghost", request_id: "r", units: 1 })).status, 404);
   });
 
-  assert.equal(planResponse.status, 201);
-
-  const customPlan = (await planResponse.json()) as {
-    id: number;
-  };
-
-  assert.ok(customPlan.id);
-
-  // Create a user belonging to account A.
-  const userExternalId = `test-user-${suffix}`;
-
-  const userResponse = await fetch(`${baseUrl}/api/users`, {
-    method: "POST",
-    headers: headersA,
-    body: JSON.stringify({
-      external_id: userExternalId,
-      plan_id: customPlan.id,
-    }),
+  test("errors are JSON: malformed body, bad query, unknown route, long external_id", async () => {
+    const { key } = await setup(api, { monthly: 100, perRequest: 10 }, {});
+    const malformed = await fetch(`${base}/api/usage`, {
+      method: "POST", headers: { "content-type": "application/json", "x-api-key": key }, body: "{not json",
+    });
+    assert.equal(malformed.status, 400);
+    assert.equal((await malformed.json()).code, "invalid_json");
+    assert.equal((await api("GET", "/api/usage/summary?month=2026-13", key)).status, 400);
+    assert.equal((await api("GET", "/api/usage/history?limit=1000", key)).status, 400);
+    assert.equal((await api("GET", "/api/nope")).status, 404);
+    const long = await api("POST", "/api/users", key, { external_id: "x".repeat(300), plan_id: await predefinedPlanId(api, "Basic") });
+    assert.equal(long.status, 400);
   });
 
-  assert.equal(userResponse.status, 201);
-
-  // Test successful usage recording.
-  await t.test("accepts valid usage", async () => {
-    const response = await fetch(`${baseUrl}/api/usage`, {
-      method: "POST",
-      headers: headersA,
-      body: JSON.stringify({
-        external_id: userExternalId,
-        request_id: `usage-${suffix}`,
-        units: 10,
-      }),
-    });
-
-    assert.equal(response.status, 201);
-
-    const result = (await response.json()) as {
-      message: string;
-      accepted: boolean;
-      requested_units: number;
-    };
-
-    assert.equal(result.message, "Usage recorded successfully");
-    assert.equal(result.accepted, true);
-    assert.equal(result.requested_units, 10);
-  });
-
-  // Test idempotency: repeating a request must not count its units twice.
-  await t.test("does not count a repeated request twice", async () => {
-    const requestBody = {
-      external_id: userExternalId,
-      request_id: `idempotency-${suffix}`,
-      units: 1,
-    };
-
-    const firstResponse = await fetch(`${baseUrl}/api/usage`, {
-      method: "POST",
-      headers: headersA,
-      body: JSON.stringify(requestBody),
-    });
-
-    assert.equal(firstResponse.status, 201);
-
-    const firstResult = (await firstResponse.json()) as {
-      accepted: boolean;
-    };
-
-    assert.equal(firstResult.accepted, true);
-
-    const secondResponse = await fetch(`${baseUrl}/api/usage`, {
-      method: "POST",
-      headers: headersA,
-      body: JSON.stringify(requestBody),
-    });
-
-    const secondResult = (await secondResponse.json()) as {
-      message: string;
-      accepted: boolean;
-      replayed: boolean;
-    };
-
-    assert.equal(secondResult.message, "Usage already recorded");
-    assert.equal(secondResult.accepted, true);
-    assert.equal(secondResult.replayed, true);
-
-    // The first usage request added 10 units, and this request added 1.
-    // Replaying it must not increase the total again.
-    const summaryResponse = await fetch(
-      `${baseUrl}/api/usage/users/${encodeURIComponent(
-        userExternalId,
-      )}/summary`,
-      {
-        headers: headersA,
-      },
-    );
-
-    assert.equal(summaryResponse.status, 200);
-
-    const summary = (await summaryResponse.json()) as {
-      used_units: string | number;
-    };
-
-    assert.equal(Number(summary.used_units), 11);
-  });
-
-  // Account B must not be able to access account A's user.
-  await t.test("does not expose a user's usage to another account", async () => {
-    const response = await fetch(`${baseUrl}/api/usage`, {
-      method: "POST",
-      headers: headersB,
-      body: JSON.stringify({
-        external_id: userExternalId,
-        request_id: `cross-account-${suffix}`,
-        units: 1,
-      }),
-    });
-
-    assert.equal(response.status, 404);
-    assert.deepEqual(await response.json(), {
-      message: "User not found",
-    });
-  });
-
-  // Account B must not be able to update account A's custom plan.
-  await t.test("does not allow another account to update a custom plan", async () => {
-    const response = await fetch(
-      `${baseUrl}/api/plans/${customPlan.id}`,
-      {
-        method: "PATCH",
-        headers: headersB,
-        body: JSON.stringify({
-          name: `Unauthorized Change ${suffix}`,
-        }),
-      },
-    );
-
-    assert.equal(response.status, 404);
-    assert.deepEqual(await response.json(), {
-      message: "Custom plan not found",
-    });
-  });
-
-  // Default plans must not be editable through the custom-plan endpoint.
-  await t.test("does not allow updating a default plan", async () => {
-    const response = await fetch(
-      `${baseUrl}/api/plans/${defaultPlan!.id}`,
-      {
-        method: "PATCH",
-        headers: headersA,
-        body: JSON.stringify({
-          name: `Unauthorized Default Plan Change ${suffix}`,
-        }),
-      },
-    );
-
-    assert.equal(response.status, 404);
-    assert.deepEqual(await response.json(), {
-      message: "Custom plan not found",
-    });
+  test("health reports the database", async () => {
+    assert.deepEqual((await api("GET", "/health")).body, { status: "ok", database: "connected" });
   });
 });

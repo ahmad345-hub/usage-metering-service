@@ -1,5 +1,7 @@
+-- Schema and predefined plans. The service runs this file at every start (src/db/migrate.ts),
+-- so it must be safe to run repeatedly: every statement is idempotent.
 
-CREATE TABLE plans (
+CREATE TABLE IF NOT EXISTS plans (
     id SERIAL PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
     plan_type VARCHAR(20) NOT NULL,
@@ -18,10 +20,15 @@ CREATE TABLE plans (
         CHECK (max_per_request > 0)
 );
 
+-- Added after the first version: set whenever a custom plan is edited.
+-- (Also upgrades a database that was created from the older init.sql.)
+ALTER TABLE plans
+ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 
-CREATE TABLE accounts (
+
+CREATE TABLE IF NOT EXISTS accounts (
     id SERIAL PRIMARY KEY,
-    name VARCHAR(100) NOT NULL,
+    name VARCHAR(255) NOT NULL,
     api_key_hash VARCHAR(255) NOT NULL UNIQUE,
     plan_id INTEGER NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -31,8 +38,12 @@ CREATE TABLE accounts (
         REFERENCES plans(id)
 );
 
+-- The API accepts account names up to 255 characters (was 100).
+ALTER TABLE accounts
+ALTER COLUMN name TYPE VARCHAR(255);
 
-CREATE TABLE users (
+
+CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
     account_id INTEGER NOT NULL,
     external_id VARCHAR(100) NOT NULL,
@@ -55,7 +66,7 @@ CREATE TABLE users (
 );
 
 
-CREATE TABLE usage_records (
+CREATE TABLE IF NOT EXISTS usage_records (
     id SERIAL PRIMARY KEY,
     account_id INTEGER NOT NULL,
     user_id INTEGER,
@@ -78,16 +89,16 @@ CREATE TABLE usage_records (
 );
 
 
-CREATE UNIQUE INDEX unique_account_month
+CREATE UNIQUE INDEX IF NOT EXISTS unique_account_month
 ON usage_records (account_id, month)
 WHERE user_id IS NULL;
 
-CREATE UNIQUE INDEX unique_user_month
+CREATE UNIQUE INDEX IF NOT EXISTS unique_user_month
 ON usage_records (user_id, month)
 WHERE user_id IS NOT NULL;
 
 
-CREATE TABLE usage_requests (
+CREATE TABLE IF NOT EXISTS usage_requests (
     id BIGSERIAL PRIMARY KEY,
     account_id INTEGER NOT NULL,
     user_id INTEGER NOT NULL,
@@ -141,27 +152,39 @@ CREATE TABLE usage_requests (
 );
 
 
-ALTER TABLE plans
-ADD CONSTRAINT fk_plan_owner
-FOREIGN KEY (account_id)
-REFERENCES accounts(id);
+-- ALTER TABLE ... ADD CONSTRAINT has no IF NOT EXISTS, so check the catalog first.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'fk_plan_owner'
+    ) THEN
+        ALTER TABLE plans
+        ADD CONSTRAINT fk_plan_owner
+        FOREIGN KEY (account_id)
+        REFERENCES accounts(id);
+    END IF;
+END $$;
 
 
-CREATE UNIQUE INDEX unique_default_plan
+CREATE UNIQUE INDEX IF NOT EXISTS unique_default_plan
 ON plans (plan_type, name)
 WHERE account_id IS NULL;
 
 
-CREATE UNIQUE INDEX unique_custom_plan
+CREATE UNIQUE INDEX IF NOT EXISTS unique_custom_plan
 ON plans (account_id, plan_type, name)
 WHERE account_id IS NOT NULL;
 
 
-CREATE INDEX idx_usage_requests_history
+CREATE INDEX IF NOT EXISTS idx_usage_requests_history
 ON usage_requests (account_id, created_at DESC);
 
+-- History filtered by one user (GET /api/usage/history?external_id=...).
+CREATE INDEX IF NOT EXISTS idx_usage_requests_user_history
+ON usage_requests (user_id, created_at DESC);
 
-CREATE INDEX idx_usage_records_month
+
+CREATE INDEX IF NOT EXISTS idx_usage_records_month
 ON usage_records (account_id, month);
 
 

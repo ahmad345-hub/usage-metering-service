@@ -1,583 +1,130 @@
-
 import { Router } from "express";
-import { authenticateApiKey } from "../middleware/auth.js";
-import pool from "../config/database.js";
-import { checkQuota } from "../services/quotaService.js";
+import { pool } from "../config/database.js";
+import { accountOf, authenticateApiKey } from "../middleware/auth.js";
+import { planColumns, planFromRow } from "../services/planService.js";
+import { remainingUnits } from "../services/quotaService.js";
+import { consumeUnits } from "../services/usageService.js";
+import { monthKey, now } from "../utils/clock.js";
+import { ApiError } from "../utils/errors.js";
+import {
+  MAX_UNITS, bodyOf, optionalBoolean, optionalMonth, optionalString, pagination, requireInt, requireString,
+} from "../utils/validation.js";
 
 const router = Router();
+router.use(authenticateApiKey);
 
-// Record usage and enforce quotas
-router.post("/", authenticateApiKey, async (req, res) => {
-  const { external_id, request_id, units } = req.body ?? {};
-  const accountId = res.locals.account.id;
+router.post("/", async (req, res) => {
+  const body = bodyOf(req);
+  const externalId = requireString(body.external_id, "external_id");
+  const requestId = requireString(body.request_id, "request_id");
+  const units = requireInt(body.units, "units", 1, MAX_UNITS);
+  const { status, body: result } = await consumeUnits(accountOf(res).id, externalId, requestId, units);
+  res.status(status).json(result);
+});
 
-  if (
-    typeof external_id !== "string" ||
-    external_id.trim() === "" ||
-    typeof request_id !== "string" ||
-    request_id.trim() === "" ||
-    request_id.trim().length > 100 ||
-    !Number.isSafeInteger(units) ||
-    units <= 0 ||
-    units > 2147483647
-  ) {
-    return res.status(400).json({
-      message: "Valid external_id, request_id and units are required"
-    });
-  }
+/**
+ * remaining_units is only reported for the current UTC month. For other months the account/user may
+ * have been on different plans, and the current limits would give a misleading number, so it is null.
+ */
+const usageView = (month: string, plan: ReturnType<typeof planFromRow>, used: number) => ({
+  plan,
+  used_units: used,
+  remaining_units: month === monthKey(now()) ? remainingUnits(plan.monthly_limit, used) : null,
+});
 
-  const client = await pool.connect().catch((error) => {
-    console.error("Database connection failed:", error);
-    return null;
+const monthOrCurrent = (value: unknown) => optionalMonth(value) ?? monthKey(now());
+
+router.get("/summary", async (req, res) => {
+  const month = monthOrCurrent(req.query.month);
+  const { rows } = await pool.query(
+    `SELECT ${planColumns("p", "plan")}, COALESCE(ar.used_units, 0) AS used
+     FROM accounts a JOIN plans p ON p.id = a.plan_id
+     LEFT JOIN usage_records ar ON ar.account_id = a.id AND ar.user_id IS NULL AND ar.month = $2::date
+     WHERE a.id = $1`,
+    [accountOf(res).id, `${month}-01`],
+  );
+  res.json({ month, account: usageView(month, planFromRow(rows[0], "plan"), rows[0].used) });
+});
+
+// Usage of every user of the account (paginated).
+router.get("/users", async (req, res) => {
+  const accountId = accountOf(res).id;
+  const month = monthOrCurrent(req.query.month);
+  const { page, limit, offset } = pagination(req.query);
+  const [list, total] = await Promise.all([
+    pool.query(
+      `SELECT u.external_id, ${planColumns("p", "plan")}, COALESCE(ur.used_units, 0) AS used
+       FROM users u JOIN plans p ON p.id = u.plan_id
+       LEFT JOIN usage_records ur ON ur.user_id = u.id AND ur.month = $2::date
+       WHERE u.account_id = $1 ORDER BY u.id LIMIT $3 OFFSET $4`,
+      [accountId, `${month}-01`, limit, offset],
+    ),
+    pool.query(`SELECT COUNT(*) AS total FROM users WHERE account_id = $1`, [accountId]),
+  ]);
+  res.json({
+    month, page, limit, total: total.rows[0].total,
+    users: list.rows.map((r) => ({ external_id: r.external_id, ...usageView(month, planFromRow(r, "plan"), r.used) })),
   });
-
-  if (!client) {
-    return res.status(503).json({
-      message: "Database unavailable"
-    });
-  }
-
-  try {
-    await client.query("BEGIN");
-
-    await client.query(
-      "SELECT pg_advisory_xact_lock($1)",
-      [accountId]
-    );
-
-    const existingRequest = await client.query(
-      `SELECT
-         r.id,
-         r.user_id,
-         u.external_id,
-         r.units,
-         r.accepted,
-         r.rejection_level,
-         r.rejection_rule
-       FROM usage_requests r
-       JOIN users u ON r.user_id = u.id
-       WHERE r.account_id = $1
-         AND r.request_id = $2`,
-      [accountId, request_id.trim()]
-    );
-
-    if (existingRequest.rows.length > 0) {
-      const previous = existingRequest.rows[0];
-
-      await client.query("ROLLBACK");
-
-      if (
-        previous.external_id !== external_id.trim() ||
-        previous.units !== units
-      ) {
-        return res.status(409).json({
-          message: "Request ID already used with different data",
-          request_id: request_id.trim()
-        });
-      }
-
-      return res.status(previous.accepted ? 200 : 429).json({
-        message: previous.accepted
-          ? "Usage already recorded"
-          : "Request was previously rejected",
-        request_id: request_id.trim(),
-        accepted: previous.accepted,
-        requested_units: previous.units,
-        rejection_level: previous.rejection_level,
-        rejection_rule: previous.rejection_rule,
-        replayed: true
-      });
-    }
-
-    const userResult = await client.query(
-      `SELECT
-         u.id,
-         u.external_id,
-         p.name AS plan_name,
-         p.monthly_limit,
-         p.max_per_request
-       FROM users u
-       JOIN plans p ON u.plan_id = p.id
-       WHERE u.account_id = $1
-         AND u.external_id = $2`,
-      [accountId, external_id.trim()]
-    );
-
-    if (userResult.rows.length === 0) {
-      await client.query("ROLLBACK");
-
-      return res.status(404).json({
-        message: "User not found"
-      });
-    }
-
-    const accountResult = await client.query(
-      `SELECT
-         a.id,
-         a.name,
-         p.name AS plan_name,
-         p.monthly_limit,
-         p.max_per_request
-       FROM accounts a
-       JOIN plans p ON a.plan_id = p.id
-       WHERE a.id = $1`,
-      [accountId]
-    );
-
-    if (accountResult.rows.length === 0) {
-      await client.query("ROLLBACK");
-
-      return res.status(404).json({
-        message: "Account not found"
-      });
-    }
-
-    const accountPlan = accountResult.rows[0];
-    const userPlan = userResult.rows[0];
-
-    const usageResult = await client.query(
-      `SELECT
-         COALESCE(
-           (SELECT used_units
-            FROM usage_records
-            WHERE account_id = $1
-              AND user_id IS NULL
-              AND month = DATE_TRUNC(
-                'month',
-                NOW() AT TIME ZONE 'UTC'
-              )::date),
-           0
-         ) AS account_used,
-         COALESCE(
-           (SELECT used_units
-            FROM usage_records
-            WHERE account_id = $1
-              AND user_id = $2
-              AND month = DATE_TRUNC(
-                'month',
-                NOW() AT TIME ZONE 'UTC'
-              )::date),
-           0
-         ) AS user_used`,
-      [accountId, userPlan.id]
-    );
-
-    const accountUsed = BigInt(usageResult.rows[0].account_used);
-    const userUsed = BigInt(usageResult.rows[0].user_used);
-    const requestedUnits = BigInt(units);
-
-    const { rejectionLevel, rejectionRule } = checkQuota({
-      account: {
-        monthlyLimit: BigInt(accountPlan.monthly_limit),
-        maxPerRequest: accountPlan.max_per_request,
-        usedUnits: accountUsed
-      },
-      user: {
-        monthlyLimit: BigInt(userPlan.monthly_limit),
-        maxPerRequest: userPlan.max_per_request,
-        usedUnits: userUsed
-      },
-      requestedUnits: units
-    });
-
-    if (rejectionLevel && rejectionRule) {
-      await client.query(
-        `INSERT INTO usage_requests
-           (account_id, user_id, request_id, units,
-            accepted, rejection_level, rejection_rule)
-         VALUES ($1, $2, $3, $4, FALSE, $5, $6)`,
-        [
-          accountId,
-          userPlan.id,
-          request_id.trim(),
-          units,
-          rejectionLevel,
-          rejectionRule
-        ]
-      );
-
-      await client.query("COMMIT");
-
-      return res.status(429).json({
-        message: "Quota exceeded",
-        level: rejectionLevel,
-        rule: rejectionRule,
-        requested_units: units
-      });
-    }
-
-    await client.query(
-      `INSERT INTO usage_records
-         (account_id, user_id, month, used_units)
-       VALUES (
-         $1,
-         NULL,
-         DATE_TRUNC('month', NOW() AT TIME ZONE 'UTC')::date,
-         $2
-       )
-       ON CONFLICT (account_id, month)
-       WHERE user_id IS NULL
-       DO UPDATE SET
-         used_units = usage_records.used_units + EXCLUDED.used_units`,
-      [accountId, units]
-    );
-
-    await client.query(
-      `INSERT INTO usage_records
-         (account_id, user_id, month, used_units)
-       VALUES (
-         $1,
-         $2,
-         DATE_TRUNC('month', NOW() AT TIME ZONE 'UTC')::date,
-         $3
-       )
-       ON CONFLICT (user_id, month)
-       WHERE user_id IS NOT NULL
-       DO UPDATE SET
-         used_units = usage_records.used_units + EXCLUDED.used_units`,
-      [accountId, userPlan.id, units]
-    );
-
-    await client.query(
-      `INSERT INTO usage_requests
-         (account_id, user_id, request_id, units, accepted)
-       VALUES ($1, $2, $3, $4, TRUE)`,
-      [accountId, userPlan.id, request_id.trim(), units]
-    );
-
-    await client.query("COMMIT");
-
-    return res.status(201).json({
-      message: "Usage recorded successfully",
-      request_id: request_id.trim(),
-      accepted: true,
-      requested_units: units,
-      account_used: (accountUsed + requestedUnits).toString(),
-      user_used: (userUsed + requestedUnits).toString()
-    });
-  } catch (error) {
-    try {
-      await client.query("ROLLBACK");
-    } catch (rollbackError) {
-      console.error("Rollback failed:", rollbackError);
-    }
-
-    console.error("Failed to record usage:", error);
-
-    return res.status(500).json({
-      message: "Failed to record usage"
-    });
-  } finally {
-    client.release();
-  }
 });
 
-// Get paginated usage history with optional month and user filters
-router.get("/history", authenticateApiKey, async (req, res) => {
-  const accountId = res.locals.account.id;
-  const externalId = req.query.external_id;
-  const month = req.query.month;
-
-  if (
-    externalId !== undefined &&
-    (typeof externalId !== "string" || externalId.trim() === "")
-  ) {
-    return res.status(400).json({
-      message: "external_id must be a non-empty string"
-    });
-  }
-
-  if (
-    month !== undefined &&
-    (
-      typeof month !== "string" ||
-      !/^\d{4}-(0[1-9]|1[0-2])$/.test(month)
-    )
-  ) {
-    return res.status(400).json({
-      message: "month must use YYYY-MM format, for example 2026-09"
-    });
-  }
-
-  const page = Number(req.query.page ?? 1);
-  const limit = Number(req.query.limit ?? 10);
-
-  if (
-    !Number.isSafeInteger(page) ||
-    page < 1 ||
-    !Number.isSafeInteger(limit) ||
-    limit < 1 ||
-    limit > 100 ||
-    !Number.isSafeInteger((page - 1) * limit)
-  ) {
-    return res.status(400).json({
-      message: "Page must be positive and limit must be between 1 and 100"
-    });
-  }
-
-  const offset = (page - 1) * limit;
-
-  const normalizedExternalId =
-    typeof externalId === "string" ? externalId.trim() : null;
-
-  const selectedMonth =
-    typeof month === "string" ? month : null;
-
-  // Convert YYYY-MM to YYYY-MM-01 before PostgreSQL casts it to a date.
-  const monthStart =
-    selectedMonth === null ? null : `${selectedMonth}-01`;
-
-  try {
-    const countResult = await pool.query(
-      `SELECT COUNT(*) AS total
-       FROM usage_requests r
-       JOIN users u ON r.user_id = u.id
-       WHERE r.account_id = $1
-         AND ($2::text IS NULL OR u.external_id = $2)
-         AND (
-           $3::date IS NULL
-           OR (
-             r.created_at >= ($3::date AT TIME ZONE 'UTC')
-             AND r.created_at < (
-               ($3::date + INTERVAL '1 month') AT TIME ZONE 'UTC'
-             )
-           )
-         )`,
-      [accountId, normalizedExternalId, monthStart]
-    );
-
-    const total = Number(countResult.rows[0].total);
-    const totalPages = Math.ceil(total / limit);
-
-    const result = await pool.query(
-      `SELECT
-         r.id,
-         r.request_id,
-         u.external_id,
-         r.units,
-         r.accepted,
-         r.rejection_level,
-         r.rejection_rule,
-         r.created_at
-       FROM usage_requests r
-       JOIN users u ON r.user_id = u.id
-       WHERE r.account_id = $1
-         AND ($2::text IS NULL OR u.external_id = $2)
-         AND (
-           $3::date IS NULL
-           OR (
-             r.created_at >= ($3::date AT TIME ZONE 'UTC')
-             AND r.created_at < (
-               ($3::date + INTERVAL '1 month') AT TIME ZONE 'UTC'
-             )
-           )
-         )
-       ORDER BY r.created_at DESC, r.id DESC
-       LIMIT $4 OFFSET $5`,
-      [
-        accountId,
-        normalizedExternalId,
-        monthStart,
-        limit,
-        offset
-      ]
-    );
-
-    return res.json({
-      account_id: accountId,
-      page,
-      limit,
-      month: selectedMonth,
-      total,
-      total_pages: totalPages,
-      count: result.rows.length,
-      requests: result.rows
-    });
-  } catch (error) {
-    console.error("Failed to load usage history:", error);
-
-    return res.status(500).json({
-      message: "Failed to load usage history"
-    });
-  }
+router.get("/users/:externalId/summary", async (req, res) => {
+  const month = monthOrCurrent(req.query.month);
+  const externalId = requireString(req.params.externalId, "externalId");
+  const { rows } = await pool.query(
+    `SELECT ${planColumns("p", "plan")}, COALESCE(ur.used_units, 0) AS used
+     FROM users u JOIN plans p ON p.id = u.plan_id
+     LEFT JOIN usage_records ur ON ur.user_id = u.id AND ur.month = $3::date
+     WHERE u.account_id = $1 AND u.external_id = $2`,
+    [accountOf(res).id, externalId, `${month}-01`],
+  );
+  if (rows.length === 0) throw new ApiError(404, "user_not_found", "User not found in this account");
+  res.json({ month, external_id: externalId, ...usageView(month, planFromRow(rows[0], "plan"), rows[0].used) });
 });
 
-// Get account usage summary for a selected UTC month
-router.get("/summary", authenticateApiKey, async (req, res) => {
-  const accountId = res.locals.account.id;
-  const month = req.query.month;
-
-  if (
-    month !== undefined &&
-    (
-      typeof month !== "string" ||
-      !/^\d{4}-(0[1-9]|1[0-2])$/.test(month)
-    )
-  ) {
-    return res.status(400).json({
-      message: "month must use YYYY-MM format, for example 2026-09"
-    });
-  }
-
-  const selectedMonth =
-    typeof month === "string" ? month : null;
-
-  const monthStart =
-    selectedMonth === null ? null : `${selectedMonth}-01`;
-
-  const currentDate = new Date();
-
-  const currentUtcMonth =
-    `${currentDate.getUTCFullYear()}-${String(
-      currentDate.getUTCMonth() + 1
-    ).padStart(2, "0")}`;
-
-  const responseMonth = selectedMonth ?? currentUtcMonth;
-
-  try {
-    const result = await pool.query(
-      `SELECT
-         a.id AS account_id,
-         p.name AS plan_name,
-         p.monthly_limit,
-         COALESCE(r.used_units, 0) AS used_units
-       FROM accounts a
-       JOIN plans p ON a.plan_id = p.id
-       LEFT JOIN usage_records r
-         ON r.account_id = a.id
-         AND r.user_id IS NULL
-         AND r.month = COALESCE(
-           $2::date,
-           DATE_TRUNC(
-             'month',
-             NOW() AT TIME ZONE 'UTC'
-           )::date
-         )
-       WHERE a.id = $1`,
-      [accountId, monthStart]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({
-        message: "Account not found"
-      });
-    }
-
-    const account = result.rows[0];
-    const monthlyLimit = BigInt(account.monthly_limit);
-    const usedUnits = BigInt(account.used_units);
-
-    const remainingUnits =
-      monthlyLimit > usedUnits ? monthlyLimit - usedUnits : 0n;
-
-    return res.json({
-      account_id: account.account_id,
-      month: responseMonth,
-      plan_name: account.plan_name,
-      monthly_limit: monthlyLimit.toString(),
-      used_units: usedUnits.toString(),
-      remaining_units: remainingUnits.toString()
-    });
-  } catch (error) {
-    console.error("Failed to load usage summary:", error);
-
-    return res.status(500).json({
-      message: "Failed to load usage summary"
-    });
-  }
+// Months in which the account consumed anything, newest first.
+router.get("/months", async (req, res) => {
+  const { rows } = await pool.query(
+    `SELECT to_char(month, 'YYYY-MM') AS month, used_units FROM usage_records
+     WHERE account_id = $1 AND user_id IS NULL ORDER BY month DESC`,
+    [accountOf(res).id],
+  );
+  res.json(rows);
 });
 
-// Get user usage summary for a selected UTC month
-router.get(
-  "/users/:externalId/summary",
-  authenticateApiKey,
-  async (req, res) => {
-    const accountId = res.locals.account.id;
-    const externalId = req.params.externalId;
-    const month = req.query.month;
+// Request outcomes (accepted and rejected), newest first. Filters: month, external_id, accepted.
+router.get("/history", async (req, res) => {
+  const accountId = accountOf(res).id;
+  const month = optionalMonth(req.query.month);
+  const externalId = optionalString(req.query.external_id, "external_id");
+  const accepted = optionalBoolean(req.query.accepted, "accepted");
+  const { page, limit, offset } = pagination(req.query);
 
-    if (
-      month !== undefined &&
-      (
-        typeof month !== "string" ||
-        !/^\d{4}-(0[1-9]|1[0-2])$/.test(month)
-      )
-    ) {
-      return res.status(400).json({
-        message: "month must use YYYY-MM format, for example 2026-09"
-      });
-    }
+  const where = `r.account_id = $1
+    AND ($2::text IS NULL OR u.external_id = $2)
+    AND ($3::boolean IS NULL OR r.accepted = $3)
+    AND ($4::date IS NULL OR (r.created_at >= ($4::date AT TIME ZONE 'UTC') AND r.created_at < ((($4::date + INTERVAL '1 month')::date) AT TIME ZONE 'UTC')))`;
+  const params = [accountId, externalId, accepted, month ? `${month}-01` : null];
 
-    const selectedMonth =
-      typeof month === "string" ? month : null;
-
-    const monthStart =
-      selectedMonth === null ? null : `${selectedMonth}-01`;
-
-    const currentDate = new Date();
-
-    const currentUtcMonth =
-      `${currentDate.getUTCFullYear()}-${String(
-        currentDate.getUTCMonth() + 1
-      ).padStart(2, "0")}`;
-
-    const responseMonth = selectedMonth ?? currentUtcMonth;
-
-    try {
-      const result = await pool.query(
-        `SELECT
-           u.id AS user_id,
-           u.external_id,
-           p.name AS plan_name,
-           p.monthly_limit,
-           COALESCE(r.used_units, 0) AS used_units
-         FROM users u
-         JOIN plans p ON u.plan_id = p.id
-         LEFT JOIN usage_records r
-           ON r.user_id = u.id
-           AND r.account_id = u.account_id
-           AND r.month = COALESCE(
-             $3::date,
-             DATE_TRUNC(
-               'month',
-               NOW() AT TIME ZONE 'UTC'
-             )::date
-           )
-         WHERE u.account_id = $1
-           AND u.external_id = $2`,
-        [accountId, externalId, monthStart]
-      );
-
-      if (result.rows.length === 0) {
-        return res.status(404).json({
-          message: "User not found"
-        });
-      }
-
-      const user = result.rows[0];
-      const monthlyLimit = BigInt(user.monthly_limit);
-      const usedUnits = BigInt(user.used_units);
-
-      const remainingUnits =
-        monthlyLimit > usedUnits ? monthlyLimit - usedUnits : 0n;
-
-      return res.json({
-        user_id: user.user_id,
-        external_id: user.external_id,
-        month: responseMonth,
-        plan_name: user.plan_name,
-        monthly_limit: monthlyLimit.toString(),
-        used_units: usedUnits.toString(),
-        remaining_units: remainingUnits.toString()
-      });
-    } catch (error) {
-      console.error("Failed to load user usage summary:", error);
-
-      return res.status(500).json({
-        message: "Failed to load user usage summary"
-      });
-    }
-  }
-);
+  const [list, total] = await Promise.all([
+    pool.query(
+      `SELECT r.request_id, u.external_id, r.units, r.accepted, r.rejection_level, r.rejection_rule, r.created_at
+       FROM usage_requests r JOIN users u ON u.id = r.user_id
+       WHERE ${where} ORDER BY r.created_at DESC, r.id DESC LIMIT $5 OFFSET $6`,
+      [...params, limit, offset],
+    ),
+    pool.query(`SELECT COUNT(*) AS total FROM usage_requests r JOIN users u ON u.id = r.user_id WHERE ${where}`, params),
+  ]);
+  res.json({
+    page, limit, total: total.rows[0].total,
+    requests: list.rows.map((r) => ({
+      request_id: r.request_id,
+      external_id: r.external_id,
+      units: r.units,
+      accepted: r.accepted,
+      rejection: r.accepted ? null : { level: r.rejection_level, rule: r.rejection_rule },
+      created_at: r.created_at,
+    })),
+  });
+});
 
 export default router;

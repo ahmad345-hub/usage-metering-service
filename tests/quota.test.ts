@@ -1,149 +1,39 @@
-
-import test from "node:test";
 import assert from "node:assert/strict";
-import { checkQuota } from "../src/services/quotaService.js";
+import test from "node:test";
+import { checkQuota, remainingUnits } from "../src/services/quotaService.js";
 
-test("Accept usage when both quotas allow it", () => {
-  const result = checkQuota({
-    account: {
-      monthlyLimit: 2400n,
-      maxPerRequest: 35,
-      usedUnits: 100n
-    },
-    user: {
-      monthlyLimit: 180n,
-      maxPerRequest: 12,
-      usedUnits: 20n
-    },
-    requestedUnits: 10
-  });
+const account = { monthlyLimit: 10_000, maxPerRequest: 100, usedUnits: 0 };
+const user = { monthlyLimit: 1_000, maxPerRequest: 20, usedUnits: 0 };
+const run = (a = {}, u = {}, requestedUnits = 10) =>
+  checkQuota({ account: { ...account, ...a }, user: { ...user, ...u }, requestedUnits });
 
-  assert.deepEqual(result, {
-    allowed: true,
-    rejectionLevel: null,
-    rejectionRule: null
-  });
+test("accepts when both plans allow the request", () => {
+  assert.deepEqual(run(), { allowed: true, rejectionLevel: null, rejectionRule: null });
 });
 
-
-
-test("Reject usage when user request limit is exceeded", () => {
-  const result = checkQuota({
-    account: {
-      monthlyLimit: 2400n,
-      maxPerRequest: 35,
-      usedUnits: 100n
-    },
-    user: {
-      monthlyLimit: 180n,
-      maxPerRequest: 12,
-      usedUnits: 20n
-    },
-    requestedUnits: 20
-  });
-
-  assert.deepEqual(result, {
-    allowed: false,
-    rejectionLevel: "user",
-    rejectionRule: "max_per_request"
-  });
+test("brief example: 25 units is rejected by the user's per-request limit", () => {
+  assert.deepEqual(run({}, {}, 25), { allowed: false, rejectionLevel: "user", rejectionRule: "max_per_request" });
 });
 
-
-
-
-test("Reject usage when user monthly quota is exceeded", () => {
-  const result = checkQuota({
-    account: {
-      monthlyLimit: 2400n,
-      maxPerRequest: 35,
-      usedUnits: 100n
-    },
-    user: {
-      monthlyLimit: 180n,
-      maxPerRequest: 12,
-      usedUnits: 175n
-    },
-    requestedUnits: 10
-  });
-
-  assert.deepEqual(result, {
-    allowed: false,
-    rejectionLevel: "user",
-    rejectionRule: "monthly_limit"
-  });
+test("brief example: 10 units with 5 account units left is rejected by the account", () => {
+  assert.deepEqual(run({ usedUnits: 9_995 }), { allowed: false, rejectionLevel: "account", rejectionRule: "monthly_limit" });
 });
 
-
-
-
-test("Reject usage when account monthly quota is exceeded", () => {
-  const result = checkQuota({
-    account: {
-      monthlyLimit: 2400n,
-      maxPerRequest: 35,
-      usedUnits: 2395n
-    },
-    user: {
-      monthlyLimit: 180n,
-      maxPerRequest: 12,
-      usedUnits: 20n
-    },
-    requestedUnits: 10
-  });
-
-  assert.deepEqual(result, {
-    allowed: false,
-    rejectionLevel: "account",
-    rejectionRule: "monthly_limit"
-  });
+test("rejects account per-request limit", () => {
+  assert.deepEqual(run({ maxPerRequest: 5 }), { allowed: false, rejectionLevel: "account", rejectionRule: "max_per_request" });
 });
 
-
-
-
-test("Reject usage when account request limit is exceeded", () => {
-  const result = checkQuota({
-    account: {
-      monthlyLimit: 2400n,
-      maxPerRequest: 35,
-      usedUnits: 100n
-    },
-    user: {
-      monthlyLimit: 950n,
-      maxPerRequest: 45,
-      usedUnits: 30n
-    },
-    requestedUnits: 40
-  });
-
-  assert.deepEqual(result, {
-    allowed: false,
-    rejectionLevel: "account",
-    rejectionRule: "max_per_request"
-  });
+test("rejects user monthly allowance", () => {
+  assert.deepEqual(run({}, { usedUnits: 995 }), { allowed: false, rejectionLevel: "user", rejectionRule: "monthly_limit" });
 });
 
+test("accepts exactly up to the monthly allowance", () => {
+  assert.equal(run({}, { usedUnits: 990 }).allowed, true);
+  assert.equal(run({ usedUnits: 9_990 }).allowed, true);
+});
 
-
-test("Accept usage when user reaches monthly quota exactly", () => {
-  const result = checkQuota({
-    account: {
-      monthlyLimit: 2400n,
-      maxPerRequest: 35,
-      usedUnits: 100n
-    },
-    user: {
-      monthlyLimit: 500n,
-      maxPerRequest: 25,
-      usedUnits: 490n
-    },
-    requestedUnits: 10
-  });
-
-  assert.deepEqual(result, {
-    allowed: true,
-    rejectionLevel: null,
-    rejectionRule: null
-  });
+test("limit lowered below usage: rejects and remaining is zero, never negative", () => {
+  assert.equal(run({}, { monthlyLimit: 10, usedUnits: 40 }).allowed, false);
+  assert.equal(remainingUnits(10, 40), 0);
+  assert.equal(remainingUnits(100, 40), 60);
 });

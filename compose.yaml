@@ -1,39 +1,70 @@
-
+# docker compose up --build
+#   service  http://localhost:3000   (API, health at /health)
 services:
   db:
-    image: postgres:17
-    container_name: quota-db
-    restart: unless-stopped
+    image: postgres:17-alpine
     environment:
       POSTGRES_USER: quota_user
       POSTGRES_PASSWORD: quota_password
       POSTGRES_DB: quota_service
     ports:
-      - "5432:5432"
+      - "127.0.0.1:${DB_PORT_HOST:-5433}:5432"   # host port 5433 (not 5432, which is often taken); only needed for `npm test` outside Docker
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U quota_user -d quota_service"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
+      interval: 3s
+      timeout: 3s
+      retries: 20
 
   api:
     build: .
-    restart: unless-stopped
-    ports:
-      - "3000:3000"
     environment:
-      PORT: 3000
+      PORT: "3000"
       DB_HOST: db
-      DB_PORT: 5432
+      DB_PORT: "5432"
       DB_USER: quota_user
       DB_PASSWORD: quota_password
       DB_NAME: quota_service
+      DB_POOL_MAX: "20"
+    ports:
+      - "${API_PORT:-3000}:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # docker compose --profile test run --rm tests
+  tests:
+    profiles: ["test"]
+    build: .
+    command: ["npm", "test"]
+    environment:
+      DB_HOST: db
+      DB_NAME: quota_service
+      NODE_ENV: test
     depends_on:
       db:
         condition: service_healthy
 
+  # docker compose --profile perf run --rm loadtest
+  loadtest:
+    profiles: ["perf"]
+    build: .
+    command: ["node", "perf/loadtest.mjs"]
+    environment:
+      BASE_URL: http://api:3000
+      DURATION: "10"
+      CONNECTIONS: "50"
+    volumes:
+      - ./perf:/app/perf
+    depends_on:
+      api:
+        condition: service_healthy
+
 volumes:
-  postgres_data:
+  pgdata:
