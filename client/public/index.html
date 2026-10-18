@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+
+<html lang="en"><head><meta charset="utf-8"/><meta content="width=device-width, initial-scale=1.0" name="viewport"/><title>Docs Inc - document processing</title><link href="https://fonts.googleapis.com" rel="preconnect"/><link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500;600&amp;display=swap" rel="stylesheet"/><link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<style>@layer base { html, body { margin: 0; padding: 0; } body { overscroll-behavior: none; } main > :first-child { margin-top: 0 !important; } main > :last-child { margin-bottom: 0 !important; } } ::-webkit-scrollbar { display: none; } button:disabled { opacity: .5; cursor: not-allowed; }</style><script src="https://cdn.tailwindcss.com"></script><script id="tailwind-config">tailwind.config = { darkMode: "class", theme: { extend: { "colors": { "surface-container-highest": "#e3e1ec", "surface-tint": "#565e74", "on-secondary-fixed-variant": "#003ea8", "on-tertiary": "#ffffff", "surface-container-low": "#f4f2fd", "tertiary-fixed": "#fcdeb5", "primary-fixed": "#dae2fd", "primary-container": "#131b2e", "on-surface-variant": "#45464d", "on-primary-fixed-variant": "#3f465c", "surface-container-high": "#e8e7f1", "on-secondary-fixed": "#00174b", "primary-fixed-dim": "#bec6e0", "outline-variant": "#c6c6cd", "surface-dim": "#dad9e3", "background": "#fbf8ff", "surface-variant": "#e3e1ec", "on-secondary-container": "#fefcff", "on-error-container": "#93000a", "secondary-fixed-dim": "#b4c5ff", "on-primary": "#ffffff", "on-primary-fixed": "#131b2e", "outline": "#76777d", "on-background": "#1a1b22", "primary": "#000000", "inverse-primary": "#bec6e0", "on-tertiary-container": "#98805d", "surface-container-lowest": "#ffffff", "on-secondary": "#ffffff", "surface-container": "#eeedf7", "secondary-container": "#316bf3", "on-tertiary-fixed-variant": "#574425", "surface": "#fbf8ff", "tertiary-container": "#271901", "on-error": "#ffffff", "error-container": "#ffdad6", "inverse-surface": "#2f3038", "tertiary-fixed-dim": "#dec29a", "error": "#ba1a1a", "on-tertiary-fixed": "#271901", "on-primary-container": "#7c839b", "inverse-on-surface": "#f1effa", "tertiary": "#000000", "on-surface": "#1a1b22", "surface-bright": "#fbf8ff", "secondary": "#0051d5", "secondary-fixed": "#dbe1ff" }, "borderRadius": { "DEFAULT": "0.125rem", "lg": "0.25rem", "xl": "0.5rem", "full": "0.75rem" }, "spacing": { "space-xl": "1rem", "margin": "1rem", "space-sm": "0.375rem", "gutter-desktop": "1rem", "space-lg": "0.75rem", "space-xs": "0.25rem", "space-md": "0.5rem", "margin-desktop": "1.5rem", "gutter": "0.75rem" }, "fontFamily": { "headline-sm": [ "Inter" ], "code-sm": [ "JetBrains Mono" ], "label-md": [ "JetBrains Mono" ], "label-sm": [ "JetBrains Mono" ], "body-md": [ "Inter" ], "body-sm": [ "Inter" ], "metric-display": [ "JetBrains Mono" ], "headline-lg": [ "Inter" ], "headline-md": [ "Inter" ] }, "fontSize": { "headline-sm": [ "1rem", { "lineHeight": "1.5rem", "letterSpacing": "-0.01em", "fontWeight": "600" } ], "code-sm": [ "0.75rem", { "lineHeight": "1.125rem", "letterSpacing": "0", "fontWeight": "400" } ], "label-md": [ "0.8125rem", { "lineHeight": "1.125rem", "letterSpacing": "-0.01em", "fontWeight": "500" } ], "label-sm": [ "0.6875rem", { "lineHeight": "0.875rem", "letterSpacing": "0.02em", "fontWeight": "500" } ], "body-md": [ "0.875rem", { "lineHeight": "1.25rem", "letterSpacing": "0", "fontWeight": "400" } ], "body-sm": [ "0.75rem", { "lineHeight": "1rem", "letterSpacing": "0", "fontWeight": "400" } ], "metric-display": [ "1.75rem", { "lineHeight": "2rem", "letterSpacing": "-0.03em", "fontWeight": "600" } ], "headline-lg": [ "1.5rem", { "lineHeight": "2rem", "letterSpacing": "-0.02em", "fontWeight": "600" } ], "headline-md": [ "1.25rem", { "lineHeight": "1.75rem", "letterSpacing": "-0.015em", "fontWeight": "600" } ] } } } };</script></head>
+<body class="bg-background font-body-md text-on-surface antialiased min-h-screen">
+
+<header class="fixed top-0 left-0 right-0 z-50 bg-surface-container-lowest border-b border-outline-variant"><div class="h-14 max-w-[1140px] mx-auto px-margin-desktop flex items-center justify-between"><div class="flex items-center gap-space-lg"><span class="font-headline-sm text-headline-sm text-on-surface tracking-tight">Docs Inc</span><span class="inline-flex items-center gap-1.5 px-2 py-0.5 border border-outline-variant rounded bg-surface-container-low font-code-sm text-code-sm text-on-surface-variant"><span class="w-1.5 h-1.5 rounded-full bg-secondary"></span><span id="account-label">Demo account: connecting...</span></span></div><div class="flex items-center gap-space-md"><button class="h-8 px-space-md border border-outline-variant rounded bg-surface-container-lowest font-body-sm text-body-sm text-on-surface hover:bg-surface-container transition-colors" id="reset-btn" type="button">Reset demo</button></div></div></header>
+
+<main class="w-full pt-14 bg-background"><div class="max-w-[1140px] mx-auto px-margin-desktop py-space-xl">
+
+<div class="hidden mb-space-lg p-space-lg rounded bg-error-container text-on-error-container font-body-sm text-body-sm flex items-center justify-between" id="network-banner" role="alert"><span id="network-banner-text">Cannot reach the metering service. Retry.</span><button class="h-7 px-2.5 border border-on-error-container/40 rounded" id="retry-btn" type="button">Retry</button></div>
+
+<div class="grid grid-cols-12 gap-gutter-desktop items-start">
+
+<!-- Left column -->
+<div class="col-span-12 lg:col-span-7 flex flex-col gap-space-lg">
+
+<section class="bg-surface-container-lowest p-space-lg rounded" id="process-doc-section">
+<h2 class="font-headline-sm text-headline-sm text-on-surface mb-space-md">Process a document</h2>
+<div class="grid grid-cols-1 sm:grid-cols-12 gap-space-md items-end">
+<div class="sm:col-span-5 flex flex-col gap-space-xs">
+<label class="font-body-sm text-body-sm text-on-surface-variant" for="user-select">User</label>
+<div class="relative">
+<select class="w-full h-8 px-space-md bg-surface-container-lowest border border-outline-variant text-on-surface font-body-sm text-body-sm rounded appearance-none cursor-pointer focus:outline-none focus:border-secondary" id="user-select"></select>
+<span class="material-symbols-outlined absolute right-2 top-2 text-[16px] pointer-events-none text-outline">expand_more</span>
+</div>
+</div>
+<div class="sm:col-span-4 flex flex-col gap-space-xs">
+<label class="font-body-sm text-body-sm text-on-surface-variant" for="units-input">Units requested</label>
+<div class="flex items-center gap-1.5">
+<input class="w-20 h-8 px-space-md bg-surface-container-lowest border border-outline-variant text-on-surface font-code-sm text-code-sm rounded focus:outline-none focus:border-secondary text-right" id="units-input" max="2147483647" min="1" type="number" value="10"/>
+<div class="flex items-center gap-1">
+<button class="h-8 px-2 bg-surface-container-low hover:bg-surface-container text-on-surface font-code-sm text-code-sm rounded transition-colors" data-delta="5" type="button">+5</button>
+<button class="h-8 px-2 bg-surface-container-low hover:bg-surface-container text-on-surface font-code-sm text-code-sm rounded transition-colors" data-delta="10" type="button">+10</button>
+<button class="h-8 px-2 bg-surface-container-low hover:bg-surface-container text-on-surface font-code-sm text-code-sm rounded transition-colors" data-delta="25" type="button">+25</button>
+</div>
+</div>
+</div>
+<div class="sm:col-span-3 flex justify-end">
+<button class="w-full h-8 px-space-md bg-primary text-on-primary hover:bg-inverse-surface rounded font-body-sm text-body-sm font-medium transition-colors" id="process-btn" type="button">Process document</button>
+</div>
+</div>
+</section>
+
+<section class="bg-surface-container-lowest p-space-lg rounded" id="decision-panel">
+<div class="flex items-center justify-between mb-space-sm">
+<span class="font-body-sm text-body-sm text-on-surface-variant uppercase tracking-wider">Decision</span>
+<span id="decision-badge"></span>
+</div>
+<div class="font-headline-sm text-headline-sm text-on-surface" id="decision-title">No request yet.</div>
+<p class="font-code-sm text-code-sm text-on-surface-variant mt-1" id="decision-detail"></p>
+</section>
+
+<section class="bg-surface-container-lowest p-space-lg rounded" id="history-table">
+<div class="flex items-center justify-between mb-space-md">
+<h2 class="font-headline-sm text-headline-sm text-on-surface">Recent decisions</h2>
+<span class="font-code-sm text-code-sm text-on-surface-variant" id="history-count"></span>
+</div>
+<div class="overflow-x-auto">
+<table class="w-full text-left font-body-sm text-body-sm">
+<thead><tr class="bg-surface-container-low text-on-surface-variant">
+<th class="py-1.5 px-space-md font-label-md text-label-md">Time</th>
+<th class="py-1.5 px-space-md font-label-md text-label-md">User</th>
+<th class="py-1.5 px-space-md font-label-md text-label-md text-right">Units</th>
+<th class="py-1.5 px-space-md font-label-md text-label-md">Outcome</th>
+<th class="py-1.5 px-space-md font-label-md text-label-md">Details / reason</th>
+</tr></thead>
+<tbody id="history-body"></tbody>
+</table>
+</div>
+</section>
+
+</div>
+
+<!-- Right column -->
+<div class="col-span-12 lg:col-span-5 flex flex-col gap-space-lg">
+
+<section class="bg-surface-container-lowest p-space-lg rounded" id="account-card">
+<div class="flex items-center justify-between mb-space-md gap-2">
+<h2 class="font-headline-sm text-headline-sm text-on-surface">Account allowance</h2>
+<div class="relative">
+<select class="h-7 px-2 pr-6 bg-surface-container-low border border-outline-variant text-on-surface font-label-sm text-label-sm rounded appearance-none cursor-pointer focus:outline-none max-w-[190px]" id="account-plan-select" aria-label="Account plan"></select>
+<span class="material-symbols-outlined absolute right-1 top-1.5 text-[14px] pointer-events-none text-outline">expand_more</span>
+</div>
+</div>
+<div class="flex items-baseline justify-between mb-1">
+<div class="flex items-baseline gap-1 font-code-sm">
+<span class="font-metric-display text-metric-display tabular-nums text-on-surface" id="account-used">-</span>
+<span class="text-body-sm text-on-surface-variant" id="account-limit">/ - units</span>
+</div>
+<span class="font-code-sm text-code-sm text-on-surface-variant tabular-nums" id="account-remaining"></span>
+</div>
+<div class="w-full h-1 bg-surface-container-high rounded overflow-hidden my-space-md"><div class="h-full bg-primary" id="account-bar" style="width: 0%;"></div></div>
+<div class="flex items-center justify-between gap-2 font-code-sm text-code-sm text-on-surface-variant pt-space-xs">
+<span id="account-limits"></span>
+<span id="account-reset"></span>
+</div>
+</section>
+
+<section class="bg-surface-container-lowest p-space-lg rounded" id="users-table">
+<div class="flex items-center justify-between mb-space-md">
+<h2 class="font-headline-sm text-headline-sm text-on-surface">Users</h2>
+<span class="font-code-sm text-code-sm text-on-surface-variant" id="users-count"></span>
+</div>
+<div class="overflow-x-auto">
+<table class="w-full text-left font-body-sm text-body-sm">
+<thead><tr class="bg-surface-container-low text-on-surface-variant">
+<th class="py-1.5 px-space-md font-label-md text-label-md">User</th>
+<th class="py-1.5 px-space-md font-label-md text-label-md">Plan</th>
+<th class="py-1.5 px-space-md font-label-md text-label-md">Limits</th>
+<th class="py-1.5 px-space-md font-label-md text-label-md text-right">Used</th>
+<th class="py-1.5 px-space-md font-label-md text-label-md text-right">Remaining</th>
+</tr></thead>
+<tbody class="font-code-sm text-code-sm" id="users-body"></tbody>
+</table>
+</div>
+</section>
+
+<section class="bg-surface-container-lowest p-space-lg rounded" id="plans-table">
+<div class="flex items-center justify-between mb-space-md">
+<h2 class="font-headline-sm text-headline-sm text-on-surface">Plans</h2>
+<span class="font-code-sm text-code-sm text-on-surface-variant">Live enforcement</span>
+</div>
+<div class="overflow-x-auto">
+<table class="w-full text-left font-body-sm text-body-sm">
+<thead><tr class="bg-surface-container-low text-on-surface-variant">
+<th class="py-1.5 px-space-md font-label-md text-label-md">Plan</th>
+<th class="py-1.5 px-space-md font-label-md text-label-md">Type</th>
+<th class="py-1.5 px-space-md font-label-md text-label-md">Monthly allowance</th>
+<th class="py-1.5 px-space-md font-label-md text-label-md">Max per req</th>
+<th class="py-1.5 px-space-md font-label-md text-label-md text-right">Action</th>
+</tr></thead>
+<tbody class="font-code-sm text-code-sm" id="plans-body"></tbody>
+</table>
+</div>
+<p class="font-body-sm text-body-sm text-on-surface-variant mt-space-md" id="action-note">Changes apply immediately to the next request. Predefined plans are read-only.</p>
+</section>
+</div>
+
+</div>
+</div></main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const fmt = (n) => Number(n).toLocaleString("en-US");
+const TD = "py-2 px-space-md";
+const BADGE_OK = "inline-flex items-center gap-1.5 px-1.5 py-0.5 rounded bg-surface-container-low font-code-sm text-code-sm text-on-surface";
+const BADGE_NO = "inline-flex items-center gap-1.5 px-1.5 py-0.5 rounded bg-error-container font-code-sm text-code-sm text-on-error-container";
+const badge = (ok, text) => `<span class="${ok ? BADGE_OK : BADGE_NO}"><span class="w-1.5 h-1.5 rounded-full ${ok ? "bg-secondary" : "bg-error"}"></span>${esc(text)}</span>`;
+
+// All calls go to this example app's own server, which holds the API key and calls the metering service.
+async function api(path, body) {
+  const res = await fetch(path, body === undefined ? {} : { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const data = await res.json().catch(() => ({ message: "Invalid response" }));
+  if (res.status === 502) throw new Error(data.message || "Cannot reach the metering service. Retry.");
+  return data;
+}
+
+function banner(message) {
+  $("network-banner").classList.toggle("hidden", !message);
+  if (message) $("network-banner-text").textContent = message;
+}
+
+const daysToReset = () => {
+  const n = new Date();
+  return Math.ceil((Date.UTC(n.getUTCFullYear(), n.getUTCMonth() + 1, 1) - n.getTime()) / 86400000);
+};
+
+const planOptions = (plans, selectedId) =>
+  plans.map((p) => `<option value="${p.id}" ${p.id === selectedId ? "selected" : ""}>${esc(p.name)}${p.predefined ? "" : " (custom)"}</option>`).join("");
+
+function render(s) {
+  $("account-label").textContent = `Demo account: ${s.accountName}`;
+
+  // Account allowance
+  const a = s.account.usage, plan = a.plan;
+  const pct = plan.monthly_limit ? Math.min(100, (a.used_units / plan.monthly_limit) * 100) : 100;
+  $("account-used").textContent = a.used_units;
+  $("account-limit").textContent = `/ ${plan.monthly_limit} units`;
+  $("account-remaining").textContent = `${a.remaining_units} remaining (${(100 - pct).toFixed(1)}% left)`;
+  $("account-bar").style.width = `${pct}%`;
+  $("account-limits").textContent = `${plan.monthly_limit} units / month, max ${plan.max_per_request} per request`;
+  $("account-reset").textContent = `Resets in ${daysToReset()} days (UTC)`;
+  $("account-plan-select").innerHTML = planOptions(s.plans.account, plan.id);
+
+  // User select (keep the current choice)
+  const chosen = $("user-select").value;
+  $("user-select").innerHTML = s.users
+    .map((u) => `<option value="${esc(u.external_id)}">${esc(u.external_id)} (${esc(u.plan.name)} - ${fmt(u.remaining_units)} remaining)</option>`).join("");
+  if (chosen && s.users.some((u) => u.external_id === chosen)) $("user-select").value = chosen;
+
+  // Users table
+  $("users-count").textContent = `${s.users.length} active`;
+  $("users-body").innerHTML = s.users.map((u) => `
+    <tr class="hover:bg-surface-container-low/50">
+      <td class="${TD} text-on-surface">${esc(u.external_id)}</td>
+      <td class="${TD}"><select class="h-6 px-1.5 bg-surface-container-low border border-outline-variant text-on-surface font-label-sm text-label-sm rounded cursor-pointer focus:outline-none" data-user="${esc(u.external_id)}" aria-label="Plan of ${esc(u.external_id)}">${planOptions(s.plans.user, u.plan.id)}</select></td>
+      <td class="${TD} text-on-surface-variant whitespace-nowrap">${u.plan.monthly_limit} / mo, ${u.plan.max_per_request} / req</td>
+      <td class="${TD} text-right tabular-nums text-on-surface">${u.used_units}</td>
+      <td class="${TD} text-right tabular-nums text-on-surface">${u.remaining_units}</td>
+    </tr>`).join("");
+
+  // Plans table: custom plans are editable, predefined plans are read-only
+  $("plans-body").innerHTML = s.plans.all.map((p) => {
+    const cells = p.predefined
+      ? `<td class="${TD} tabular-nums text-on-surface">${p.monthly_limit}</td><td class="${TD} tabular-nums text-on-surface">${p.max_per_request}</td><td class="${TD} text-right text-on-surface-variant">Read-only</td>`
+      : `<td class="${TD}"><input class="w-20 h-7 px-2 bg-surface-container-low border border-outline-variant text-on-surface rounded text-right tabular-nums focus:outline-none" id="m-${p.id}" type="number" min="0" value="${p.monthly_limit}" aria-label="Monthly allowance of ${esc(p.name)}"/></td>
+         <td class="${TD}"><input class="w-16 h-7 px-2 bg-surface-container-low border border-outline-variant text-on-surface rounded text-right tabular-nums focus:outline-none" id="r-${p.id}" type="number" min="1" value="${p.max_per_request}" aria-label="Max per request of ${esc(p.name)}"/></td>
+         <td class="${TD} text-right"><button class="h-7 px-2.5 bg-surface-container-low hover:bg-surface-container border border-outline-variant text-on-surface rounded font-body-sm text-body-sm transition-colors" data-save="${p.id}" type="button">Save</button></td>`;
+    return `<tr class="hover:bg-surface-container-low/50"><td class="${TD} font-medium text-on-surface">${esc(p.name)}</td><td class="${TD} text-on-surface-variant">${p.type === "account" ? "Account" : "User"}</td>${cells}</tr>`;
+  }).join("");
+
+  // History
+  $("history-count").textContent = s.history_total ? `${s.history_total} events logged` : "";
+  $("history-body").innerHTML = s.history.length
+    ? s.history.map((h) => `
+      <tr class="hover:bg-surface-container-low/50">
+        <td class="${TD} font-code-sm text-code-sm text-on-surface-variant whitespace-nowrap">${new Date(h.created_at).toLocaleTimeString("en-GB")}</td>
+        <td class="${TD} font-code-sm text-code-sm text-on-surface">${esc(h.external_id)}</td>
+        <td class="${TD} font-code-sm text-code-sm text-right tabular-nums text-on-surface">${h.units}</td>
+        <td class="${TD}">${badge(h.accepted, h.accepted ? "Accepted" : "Rejected")}</td>
+        <td class="${TD} font-code-sm text-code-sm text-on-surface-variant">${h.accepted ? "-" : esc(`${h.rejection.level} / ${h.rejection.rule}`)}</td>
+      </tr>`).join("")
+    : `<tr><td class="${TD} text-on-surface-variant" colspan="5">No requests yet.</td></tr>`;
+}
+
+function showDecision(r) {
+  const title = $("decision-title"), detail = $("decision-detail");
+  if (r.accepted === true) {
+    $("decision-badge").innerHTML = badge(true, `${r.http} Accepted${r.replayed ? " (replay)" : ""}`);
+    title.textContent = `Accepted. ${r.units} units for ${r.user.external_id}.`;
+    detail.textContent = `${r.user.external_id}: ${r.user.used_units} used, ${r.user.remaining_units} left. Account: ${r.account.used_units} used, ${r.account.remaining_units} left.`;
+  } else if (r.rejection) {
+    $("decision-badge").innerHTML = badge(false, `${r.http} Rejected${r.replayed ? " (replay)" : ""}`);
+    title.textContent = `${r.rejection.message}. Nothing was consumed.`;
+    detail.textContent = `${r.user.external_id} (${r.user.plan.name}): ${r.user.remaining_units} left, max ${r.user.plan.max_per_request} per request. Account (${r.account.plan.name}): ${r.account.remaining_units} left, max ${r.account.plan.max_per_request} per request. Rule: ${r.rejection.level} / ${r.rejection.rule}.`;
+  } else {
+    $("decision-badge").innerHTML = badge(false, `${r.http} Error`);
+    title.textContent = r.message || "Request failed.";
+    detail.textContent = r.code || "";
+  }
+}
+
+async function refresh() {
+  try { render(await api("/api/state")); banner(null); }
+  catch (error) { banner(error.message); }
+}
+
+async function guarded(button, fn) {
+  button.disabled = true;
+  try { await fn(); banner(null); } catch (error) { banner(error.message); } finally { button.disabled = false; }
+}
+
+const note = (text) => { $("action-note").textContent = text; };
+
+$("process-btn").addEventListener("click", () => guarded($("process-btn"), async () => {
+  const r = await api("/api/process", { external_id: $("user-select").value, units: Number($("units-input").value) });
+  showDecision(r);
+  await refresh();
+}));
+
+document.querySelectorAll("[data-delta]").forEach((b) => b.addEventListener("click", () => {
+  $("units-input").value = Math.max(1, (parseInt($("units-input").value, 10) || 0) + Number(b.dataset.delta));
+}));
+
+$("account-plan-select").addEventListener("change", async (e) => {
+  const r = await api("/api/account-plan", { plan_id: Number(e.target.value) }).catch((x) => (banner(x.message), null));
+  if (r) note(r.status === 200 ? `Account plan changed to ${r.data.plan.name}. Used units are kept.` : r.data.message);
+  refresh();
+});
+
+$("users-body").addEventListener("change", async (e) => {
+  const sel = e.target.closest("select[data-user]");
+  if (!sel) return;
+  const r = await api("/api/user-plan", { external_id: sel.dataset.user, plan_id: Number(sel.value) }).catch((x) => (banner(x.message), null));
+  if (r) note(r.status === 200 ? `${sel.dataset.user} switched to ${r.data.plan.name}. Used units are kept.` : r.data.message);
+  refresh();
+});
+
+$("plans-body").addEventListener("click", async (e) => {
+  const btn = e.target.closest("button[data-save]");
+  if (!btn) return;
+  const id = btn.dataset.save;
+  await guarded(btn, async () => {
+    const r = await api("/api/edit-plan", { id: Number(id), monthly_limit: Number($("m-" + id).value), max_per_request: Number($("r-" + id).value) });
+    note(r.status === 200 ? "Saved. Applies to the next request." : r.data.message);
+    await refresh();
+  });
+});
+
+$("reset-btn").addEventListener("click", () => guarded($("reset-btn"), async () => {
+  await api("/api/reset", {});
+  $("decision-badge").innerHTML = "";
+  $("decision-title").textContent = "No request yet.";
+  $("decision-detail").textContent = "";
+  note("Demo reset. A new account with alice (Basic) and bob (Premium) was created.");
+  await refresh();
+}));
+
+$("retry-btn").addEventListener("click", refresh);
+refresh();
+</script>
+</body></html>

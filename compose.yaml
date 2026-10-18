@@ -1,5 +1,6 @@
 # docker compose up --build
 #   service  http://localhost:3000   (API, health at /health)
+#   client   http://localhost:8080   (example application)
 services:
   db:
     image: postgres:17-alpine
@@ -37,6 +38,17 @@ services:
       interval: 3s
       timeout: 3s
       retries: 20
+
+  client:
+    build: ./client
+    environment:
+      PORT: "8080"
+      SERVICE_URL: http://api:3000
+    ports:
+      - "${CLIENT_PORT:-8080}:8080"
+    depends_on:
+      api:
+        condition: service_healthy
 
   # docker compose --profile test run --rm tests
   tests:
